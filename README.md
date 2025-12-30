@@ -21,7 +21,6 @@ For determining when to DCA, it uses either the current price level from the AI 
 
 For determining when to sell, the bot uses a trailing profit margin to maximize the potential gains. The margin line is set at either 5% gain if no DCA has happened on the trade, or 2.5% gain if any DCA has happened. The trailing margin gap is 0.5% (this is the amount the price has to go over the profit margin to begin raising the profit margin up to TRAIL after the price and maximize how much profit is gained once the price drops below the profit margin again and the bot sells the trade.
 
-
 # Setup & First-Time Use (Windows)
 
 THESE INSTRUCTIONS WERE WRITTEN BY AI! PLEASE LET ME KNOW IF THERE ARE ANY ERRORS OR ISSUES WITH THIS SETUP PROCESS!
@@ -62,11 +61,7 @@ Keep your API keys private. We are not giving financial advice. We are not respo
 
    `cd C:\PowerTraderAI`
 
-3. If using Python 3.12 or higher, run this command:
-
-   `python -m pip install setuptools`
-
-4. Install everything PowerTrader AI needs:
+3. Install everything PowerTrader AI needs:
 
    `python -m pip install -r requirements.txt`
 

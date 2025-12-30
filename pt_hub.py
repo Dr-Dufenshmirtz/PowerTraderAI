@@ -1,4 +1,30 @@
 from __future__ import annotations
+"""
+pt_hub.py
+
+Description:
+This module implements the Tkinter GUI hub for PowerTrader. It provides
+widgets, layout helpers, and the bridge logic that reads/writes hub_data
+files to monitor and control the `trainer`, `thinker`, and `trader`
+processes. The hub displays predicted levels, trade status, and provides
+controls to start/stop components.
+
+Repository: https://github.com/garagesteve1155/PowerTrader_AI
+Author: Stephen Hughes (garagesteve1155)
+
+Relevant behavior notes (informational only):
+
+- Visualization:
+    The hub presents predicted highs/lows (from the trainer/thinker) as
+    colored horizontal lines on charts and provides live status panels for
+    each coin.
+
+- Coordination:
+    The GUI communicates with other processes through status files and the
+    `hub_data` directory so each component can run independently while the
+    hub shows a unified view.
+"""
+
 import os
 import sys
 import json
@@ -28,18 +54,16 @@ DARK_PANEL2 = "#121C2F"
 DARK_BORDER = "#243044"
 DARK_FG = "#C7D1DB"
 DARK_MUTED = "#8B949E"
-DARK_ACCENT = "#00FF66"   
-DARK_ACCENT2 = "#00E5FF"   
+DARK_ACCENT = "#00FF66"
+DARK_ACCENT2 = "#00E5FF"
 DARK_SELECT_BG = "#17324A"
 DARK_SELECT_FG = "#00FF66"
-
 
 @dataclass
 class _WrapItem:
     w: tk.Widget
     padx: Tuple[int, int] = (0, 0)
     pady: Tuple[int, int] = (0, 0)
-
 
 class WrapFrame(ttk.Frame):
 
@@ -53,6 +77,11 @@ class WrapFrame(ttk.Frame):
     def add(self, widget: tk.Widget, padx=(0, 0), pady=(0, 0)) -> None:
         self._items.append(_WrapItem(widget, padx=padx, pady=pady))
         self._schedule_reflow()
+
+# `WrapFrame` is a small layout helper used by the GUI to place many
+# small widgets on a wrapping row/column pattern. It reflows children
+# automatically when the container resizes. Keeping the helper here keeps
+# layout logic centralized for the GUI panels below.
 
     def clear(self, destroy_widgets: bool = True) -> None:
 
@@ -83,6 +112,9 @@ class WrapFrame(ttk.Frame):
         self._reflow_pending = False
         self._in_reflow = True
         try:
+            # Determine the usable width inside the frame; subtract a small
+            # padding value to avoid touching the edges. If the width is
+            # extremely small we skip layout until a real size is available.
             width = self.winfo_width()
             if width <= 1:
                 return
@@ -96,6 +128,9 @@ class WrapFrame(ttk.Frame):
             x = 0
 
             for it in self._items:
+                # Compute the required width for this widget including
+                # estimated horizontal padding; the constant `10` is a
+                # small inter-widget gap used in the original layout.
                 reqw = max(it.w.winfo_reqwidth(), it.w.winfo_width())
 
                 needed = 10 + reqw + it.padx[0] + it.padx[1]
@@ -111,7 +146,6 @@ class WrapFrame(ttk.Frame):
         finally:
             self._in_reflow = False
 
-
 class NeuralSignalTile(ttk.Frame):
 
     def __init__(self, parent: tk.Widget, coin: str, bar_height: int = 52, levels: int = 8):
@@ -126,8 +160,8 @@ class NeuralSignalTile(ttk.Frame):
         self._normal_fg = DARK_FG
         self._hover_fg = DARK_ACCENT2
 
-        self._levels = max(2, int(levels))             
-        self._display_levels = self._levels - 1        
+        self._levels = max(2, int(levels))
+        self._display_levels = self._levels - 1
 
         self._bar_h = int(bar_height)
         self._bar_w = 12
@@ -222,7 +256,6 @@ class NeuralSignalTile(ttk.Frame):
         except Exception:
             pass
 
-
     def _clamp_level(self, value: Any) -> int:
         try:
             v = int(float(value))
@@ -249,7 +282,6 @@ class NeuralSignalTile(ttk.Frame):
         for i in range(idx + 1):
             self.canvas.itemconfigure(seg_ids[i], fill=active_fill)
 
-
     def set_values(self, long_sig: Any, short_sig: Any) -> None:
         ls = self._clamp_level(long_sig)
         ss = self._clamp_level(short_sig)
@@ -257,14 +289,6 @@ class NeuralSignalTile(ttk.Frame):
         self.value_lbl.config(text=f"L:{ls} S:{ss}")
         self._set_level(self._long_segs, ls, self._long_fill)
         self._set_level(self._short_segs, ss, self._short_fill)
-
-
-
-
-
-
-
-
 
 # -----------------------------
 # Settings / Paths
@@ -289,11 +313,7 @@ DEFAULT_SETTINGS = {
     "auto_start_scripts": False,
 }
 
-
-
-
 SETTINGS_FILE = "gui_settings.json"
-
 
 def _safe_read_json(path: str) -> Optional[dict]:
     try:
@@ -302,13 +322,11 @@ def _safe_read_json(path: str) -> Optional[dict]:
     except Exception:
         return None
 
-
 def _safe_write_json(path: str, data: dict) -> None:
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, path)
-
 
 def _read_trade_history_jsonl(path: str) -> List[dict]:
     """
@@ -335,11 +353,8 @@ def _read_trade_history_jsonl(path: str) -> List[dict]:
         pass
     return out
 
-
 def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
-
-
 
 def _fmt_money(x: float) -> str:
     """Format a USD *amount* (account value, position value, etc.) as dollars with 2 decimals."""
@@ -347,7 +362,6 @@ def _fmt_money(x: float) -> str:
         return f"${float(x):,.2f}"
     except Exception:
         return "N/A"
-
 
 def _fmt_price(x: Any) -> str:
     """
@@ -394,17 +408,14 @@ def _fmt_price(x: Any) -> str:
     except Exception:
         return "N/A"
 
-
 def _fmt_pct(x: float) -> str:
     try:
         return f"{float(x):+.2f}%"
     except Exception:
         return "N/A"
 
-
 def _now_str() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
-
 
 # -----------------------------
 # Neural folder detection
@@ -442,7 +453,6 @@ def build_coin_folders(main_dir: str, coins: List[str]) -> Dict[str, str]:
 
     return out
 
-
 def read_price_levels_from_html(path: str) -> List[float]:
     """
     pt_thinker writes a python-list-like string into low_bound_prices.html / high_bound_prices.html.
@@ -478,7 +488,6 @@ def read_price_levels_from_html(path: str) -> List[float]:
                 if v >= 9e15:  # pt_thinker uses 99999999999999999
                     continue
 
-
                 vals.append(v)
             except Exception:
                 pass
@@ -497,8 +506,6 @@ def read_price_levels_from_html(path: str) -> List[float]:
     except Exception:
         return []
 
-
-
 def read_int_from_file(path: str) -> int:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -507,14 +514,12 @@ def read_int_from_file(path: str) -> int:
     except Exception:
         return 0
 
-
 def read_short_signal(folder: str) -> int:
     txt = os.path.join(folder, "short_dca_signal.txt")
     if os.path.isfile(txt):
         return read_int_from_file(txt)
     else:
         return 0
-
 
 # -----------------------------
 # Candle fetching (KuCoin)
@@ -528,21 +533,20 @@ class CandleFetcher:
         self._mode = "kucoin_client"
         self._market = None
         try:
-            from kucoin.client import Market  # type: ignore
+            from kucoin.client import Market # type: ignore
             self._market = Market(url="https://api.kucoin.com")
         except Exception:
             self._mode = "rest"
             self._market = None
 
         if self._mode == "rest":
-            import requests  # local import
+            import requests # local import
             self._requests = requests
 
         # Small in-memory cache to keep timeframe switching snappy.
         # key: (pair, timeframe, limit) -> (saved_time_epoch, candles)
         self._cache: Dict[Tuple[str, str, int], Tuple[float, List[dict]]] = {}
         self._cache_ttl_seconds: float = 10.0
-
 
     def get_klines(self, symbol: str, timeframe: str, limit: int = 120) -> List[dict]:
         """
@@ -618,8 +622,6 @@ class CandleFetcher:
         except Exception:
             return []
 
-
-
 # -----------------------------
 # Chart widget
 # -----------------------------
@@ -640,7 +642,6 @@ class CandleChart(ttk.Frame):
         self.trade_history_path = trade_history_path
 
         self.timeframe_var = tk.StringVar(value=self.settings_getter()["default_timeframe"])
-
 
         top = ttk.Frame(self)
         top.pack(fill="x", padx=6, pady=6)
@@ -677,7 +678,6 @@ class CandleChart(ttk.Frame):
             self._tf_after_id = self.after(120, _do)
 
         self.tf_combo.bind("<<ComboboxSelected>>", _debounced_tf_change)
-
 
         self.neural_status_label = ttk.Label(top, text="Neural: N/A")
         self.neural_status_label.pack(side="left", padx=(12, 0))
@@ -741,14 +741,7 @@ class CandleChart(ttk.Frame):
 
         canvas_w.bind("<Configure>", _on_canvas_configure, add="+")
 
-
-
-
-
-
-
         self._last_refresh = 0.0
-
 
     def _apply_dark_chart_style(self) -> None:
         """Apply dark styling (called on init and after every ax.clear())."""
@@ -770,7 +763,6 @@ class CandleChart(ttk.Frame):
         trail_line: Optional[float] = None,
         dca_line_price: Optional[float] = None,
     ) -> None:
-
 
         cfg = self.settings_getter()
 
@@ -817,12 +809,10 @@ class CandleChart(ttk.Frame):
             self.ax.cla()
             self._apply_dark_chart_style()
 
-
         if not candles:
             self.ax.set_title(f"{self.coin} ({tf}) - no candles", color=DARK_FG)
             self.canvas.draw_idle()
             return
-
 
         # Candlestick drawing (green up / red down) - batch rectangles
         xs = getattr(self, "_xs", None)
@@ -875,8 +865,6 @@ class CandleChart(ttk.Frame):
         except Exception:
             pass
 
-
-
         # Overlay Neural levels (blue long, orange short)
         for lv in long_levels:
             try:
@@ -889,7 +877,6 @@ class CandleChart(ttk.Frame):
                 self.ax.axhline(y=float(lv), linewidth=1, color="orange", alpha=0.8)
             except Exception:
                 pass
-
 
         # Overlay Trailing PM line (sell) and next DCA line
         try:
@@ -959,8 +946,6 @@ class CandleChart(ttk.Frame):
                     clip_on=False,
                 )
 
-
-
             # Map to your terminology: Ask=buy line, Bid=sell line
             _label_right(current_buy_price, "ASK", "purple")
             _label_right(current_sell_price, "BID", "teal")
@@ -968,8 +953,6 @@ class CandleChart(ttk.Frame):
             _label_right(trail_line, "SELL", "green")
         except Exception:
             pass
-
-
 
         # --- Trade dots (BUY / DCA / SELL) for THIS coin only ---
         try:
@@ -1046,12 +1029,9 @@ class CandleChart(ttk.Frame):
         except Exception:
             pass
 
-
         self.ax.set_xlim(-0.5, (len(candles) - 0.5) + 0.6)
 
         self.ax.set_title(f"{self.coin} ({tf})", color=DARK_FG)
-
-
 
         # x tick labels (date + time) - evenly spaced, never overlapping duplicates
         n = len(candles)
@@ -1085,9 +1065,7 @@ class CandleChart(ttk.Frame):
         except Exception:
             pass
 
-
         self.canvas.draw_idle()
-
 
         self.neural_status_label.config(text=f"Neural: long={long_sig} short={short_sig} | levels L={len(long_levels)} S={len(short_levels)}")
 
@@ -1106,7 +1084,6 @@ class CandleChart(ttk.Frame):
         else:
             self.last_update_label.config(text="Last: N/A")
 
-
 # -----------------------------
 # Account Value chart widget
 # -----------------------------
@@ -1119,7 +1096,6 @@ class AccountValueChart(ttk.Frame):
         # Hard-cap to 250 points max (account value chart only)
         self.max_points = min(int(max_points or 0) or 250, 250)
         self._last_mtime: Optional[float] = None
-
 
         top = ttk.Frame(self)
         top.pack(fill="x", padx=6, pady=6)
@@ -1180,13 +1156,6 @@ class AccountValueChart(ttk.Frame):
 
         canvas_w.bind("<Configure>", _on_canvas_configure, add="+")
 
-
-
-
-
-
-
-
     def _apply_dark_chart_style(self) -> None:
         try:
             self.fig.patch.set_facecolor(DARK_BG)
@@ -1218,7 +1187,6 @@ class AccountValueChart(ttk.Frame):
         if mtime is not None and self._last_mtime == mtime:
             return
         self._last_mtime = mtime
-
 
         points: List[Tuple[float, float]] = []
 
@@ -1263,7 +1231,6 @@ class AccountValueChart(ttk.Frame):
                     dedup.append((tsf, vf))
             points = dedup
 
-
         # Downsample to <= 250 points by AVERAGING buckets instead of skipping points.
         # This keeps the chart visually stable when new nearby values arrive.
         max_keep = min(max(2, int(self.max_points or 250)), 250)
@@ -1295,7 +1262,6 @@ class AccountValueChart(ttk.Frame):
 
             points = new_points
 
-
         # clear artists (fast) / fallback to cla()
         try:
             self.ax.lines.clear()
@@ -1305,7 +1271,6 @@ class AccountValueChart(ttk.Frame):
         except Exception:
             self.ax.cla()
             self._apply_dark_chart_style()
-
 
         if not points:
             self.ax.set_title("Account Value - no data", color=DARK_FG)
@@ -1387,7 +1352,6 @@ class AccountValueChart(ttk.Frame):
         except Exception:
             pass
 
-
         # x labels: show a few timestamps (date + time) - evenly spaced, never overlapping duplicates
         n = len(points)
         want = 5
@@ -1416,10 +1380,6 @@ class AccountValueChart(ttk.Frame):
         except Exception:
             pass
 
-
-
-
-
         self.ax.set_xlim(-0.5, (len(points) - 0.5) + 0.6)
 
         try:
@@ -1436,8 +1396,6 @@ class AccountValueChart(ttk.Frame):
 
         self.canvas.draw_idle()
 
-
-
 # -----------------------------
 # Hub App
 # -----------------------------
@@ -1447,8 +1405,6 @@ class ProcInfo:
     name: str
     path: str
     proc: Optional[subprocess.Popen] = None
-
-
 
 @dataclass
 class LogProc:
@@ -1460,8 +1416,6 @@ class LogProc:
     thread: Optional[threading.Thread] = None
     is_trainer: bool = False
     coin: Optional[str] = None
-
-
 
 class PowerTraderHub(tk.Tk):
     def __init__(self):
@@ -1497,18 +1451,14 @@ class PowerTraderHub(tk.Tk):
         # file written by pt_thinker.py (runner readiness gate used for Start All)
         self.runner_ready_path = os.path.join(self.hub_dir, "runner_ready.json")
 
-
         # internal: when Start All is pressed, we start the runner first and only start the trader once ready
         self._auto_start_trader_pending = False
-
 
         # cache latest trader status so charts can overlay buy/sell lines
         self._last_positions: Dict[str, dict] = {}
 
         # account value chart widget (created in _build_layout)
         self.account_chart = None
-
-
 
         # coin folders (neural outputs)
         self.coins = [c.upper().strip() for c in self.settings["coins"]]
@@ -1518,7 +1468,6 @@ class PowerTraderHub(tk.Tk):
 
         # Rebuild folder map after potential folder creation
         self.coin_folders = build_coin_folders(self.settings["main_neural_dir"], self.coins)
-
 
         # scripts
         self.proc_neural = ProcInfo(
@@ -1541,9 +1490,6 @@ class PowerTraderHub(tk.Tk):
 
         self.fetcher = CandleFetcher()
 
-
-        self.fetcher = CandleFetcher()
-
         self._build_menu()
         self._build_layout()
 
@@ -1558,7 +1504,6 @@ class PowerTraderHub(tk.Tk):
         self.after(250, self._tick)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-
 
     # ---- forced dark mode ----
 
@@ -1748,7 +1693,6 @@ class PowerTraderHub(tk.Tk):
         except Exception:
             pass
 
-
         # Treeview (Current Trades table)
         try:
             style.configure(
@@ -1853,7 +1797,6 @@ class PowerTraderHub(tk.Tk):
 
     # ---- menu / layout ----
 
-
     def _build_menu(self) -> None:
         menubar = tk.Menu(
             self,
@@ -1907,7 +1850,6 @@ class PowerTraderHub(tk.Tk):
 
         self.config(menu=menubar)
 
-
     def _build_layout(self) -> None:
         outer = ttk.Panedwindow(self, orient="horizontal")
         outer.pack(fill="both", expand=True)
@@ -1929,7 +1871,6 @@ class PowerTraderHub(tk.Tk):
         # LEFT: vertical split (Controls, Live Output)
         left_split = ttk.Panedwindow(left, orient="vertical")
         left_split.pack(fill="both", expand=True, padx=8, pady=8)
-
 
         # RIGHT: vertical split (Charts on top, Trades+History underneath)
         right_split = ttk.Panedwindow(right, orient="vertical")
@@ -1996,7 +1937,6 @@ class PowerTraderHub(tk.Tk):
             self._schedule_paned_clamp(getattr(self, "_pw_right_bottom_split", None)),
         ))
 
-
         # ----------------------------
         # LEFT: 1) Controls / Health (pane)
         # ----------------------------
@@ -2049,8 +1989,6 @@ class PowerTraderHub(tk.Tk):
         self.train_coin_combo.bind("<<ComboboxSelected>>", _sync_train_coin)
         _sync_train_coin()
 
-
-
         # Fixed controls bar (stable layout; no wrapping/reflow on resize)
         # Wrapped in a scrollable canvas so buttons are never cut off when the window is resized.
         btn_scroll_wrap = ttk.Frame(buttons_bar)
@@ -2061,14 +1999,12 @@ class PowerTraderHub(tk.Tk):
         btn_scroll_x = ttk.Scrollbar(btn_scroll_wrap, orient="horizontal", command=btn_canvas.xview)
         btn_canvas.configure(yscrollcommand=btn_scroll_y.set, xscrollcommand=btn_scroll_x.set)
 
-
         btn_scroll_wrap.grid_columnconfigure(0, weight=1)
         btn_scroll_wrap.grid_rowconfigure(0, weight=0)
 
         btn_canvas.grid(row=0, column=0, sticky="ew")
         btn_scroll_y.grid(row=0, column=1, sticky="ns")
         btn_scroll_x.grid(row=1, column=0, sticky="ew")
-
 
         # Start hidden; we only show scrollbars when needed.
         btn_scroll_y.grid_remove()
@@ -2117,7 +2053,6 @@ class PowerTraderHub(tk.Tk):
             except Exception:
                 pass
 
-
         def _btn_canvas_on_configure(event=None):
             try:
                 # Keep the inner window pinned to top-left
@@ -2144,14 +2079,8 @@ class PowerTraderHub(tk.Tk):
         train_group = ttk.Frame(btn_bar)
         train_group.grid(row=0, column=0, sticky="w", padx=(0, 18), pady=(0, 6))
 
-
         # One more pass after layout so scrollbars reflect the true initial size.
         self.after_idle(_btn_update_scrollbars)
-
-
-
-
-
 
         self.lbl_neural = ttk.Label(controls_left, text="Neural: stopped")
         self.lbl_neural.pack(anchor="w", padx=6, pady=(0, 2))
@@ -2161,7 +2090,6 @@ class PowerTraderHub(tk.Tk):
 
         self.lbl_last_status = ttk.Label(controls_left, text="Last status: N/A")
         self.lbl_last_status.pack(anchor="w", padx=6, pady=(0, 2))
-
 
         # ----------------------------
         # Training section (everything training-specific lives here)
@@ -2192,7 +2120,6 @@ class PowerTraderHub(tk.Tk):
         )
         self.training_list.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
-
         # Start All (moved here: LEFT side of the dual section, directly above Account)
         start_all_row = ttk.Frame(controls_left)
         start_all_row.pack(fill="x", padx=6, pady=(0, 6))
@@ -2205,11 +2132,9 @@ class PowerTraderHub(tk.Tk):
         )
         self.btn_toggle_all.pack(side="left")
 
-
         # Account info (LEFT column, under status)
         acct_box = ttk.LabelFrame(controls_left, text="Account")
         acct_box.pack(fill="x", padx=6, pady=6)
-
 
         self.lbl_acct_total_value = ttk.Label(acct_box, text="Total Account Value: N/A")
         self.lbl_acct_total_value.pack(anchor="w", padx=6, pady=(2, 0))
@@ -2232,8 +2157,6 @@ class PowerTraderHub(tk.Tk):
 
         self.lbl_pnl = ttk.Label(acct_box, text="Total realized: N/A")
         self.lbl_pnl.pack(anchor="w", padx=6, pady=(2, 2))
-
-
 
         # Neural levels overview (spans FULL width under the dual section)
         # Shows the current LONG/SHORT level (0..7) for every coin at once.
@@ -2344,13 +2267,6 @@ class PowerTraderHub(tk.Tk):
         except Exception:
             pass
 
-
-
-
-
-
-
-
         # ----------------------------
         # LEFT: 3) Live Output (pane)
         # ----------------------------
@@ -2364,7 +2280,6 @@ class PowerTraderHub(tk.Tk):
         logs_frame = ttk.LabelFrame(left_split, text="Live Output")
         self.logs_nb = ttk.Notebook(logs_frame)
         self.logs_nb.pack(fill="both", expand=True, padx=6, pady=6)
-
 
         # Runner tab
         runner_tab = ttk.Frame(self.logs_nb)
@@ -2453,7 +2368,6 @@ class PowerTraderHub(tk.Tk):
         self.trainer_text.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=(0, 6))
         trainer_scroll.pack(side="right", fill="y", padx=(0, 6), pady=(0, 6))
 
-
         # Add left panes (no trades/history on the left anymore)
         # Default should match the screenshot: more room for Controls/Health + Neural Levels.
         left_split.add(top_controls, weight=1)
@@ -2496,11 +2410,6 @@ class PowerTraderHub(tk.Tk):
 
         self.after_idle(_init_left_split_sash_once)
 
-
-
-
-
-
         # ----------------------------
         # RIGHT TOP: Charts (tabs)
         # ----------------------------
@@ -2516,7 +2425,6 @@ class PowerTraderHub(tk.Tk):
         self.chart_pages_container = ttk.Frame(charts_frame)
         # Keep left padding, remove right padding so charts fill to the edge
         self.chart_pages_container.pack(fill="both", expand=True, padx=(6, 0), pady=(0, 6))
-
 
         self._chart_tab_buttons: Dict[str, ttk.Button] = {}
         self.chart_pages: Dict[str, ttk.Frame] = {}
@@ -2581,7 +2489,6 @@ class PowerTraderHub(tk.Tk):
             except Exception:
                 pass
 
-
         self._show_chart_page = _show_page  # used by _rebuild_coin_chart_tabs()
 
         # ACCOUNT page
@@ -2625,10 +2532,6 @@ class PowerTraderHub(tk.Tk):
 
         # show initial page
         self._show_chart_page("ACCOUNT")
-
-
-
-
 
         # ----------------------------
         # RIGHT BOTTOM: Current Trades + Trade History (stacked)
@@ -2744,7 +2647,6 @@ class PowerTraderHub(tk.Tk):
         self.trades_tree.bind("<Configure>", lambda e: self.after_idle(_resize_trades_columns))
         self.after_idle(_resize_trades_columns)
 
-
         # Trade history (bottom)
         hist_frame = ttk.LabelFrame(right_bottom_split, text="Trade History (scroll)")
 
@@ -2769,7 +2671,6 @@ class PowerTraderHub(tk.Tk):
         self.hist_list.pack(side="left", fill="both", expand=True)
         ysb2.pack(side="right", fill="y")
         xsb2.pack(side="bottom", fill="x")
-
 
         # Assemble right side
         right_split.add(charts_frame, weight=3)
@@ -2851,12 +2752,9 @@ class PowerTraderHub(tk.Tk):
             self._schedule_paned_clamp(getattr(self, "_pw_right_bottom_split", None)),
         ))
 
-
         # status bar
         self.status = ttk.Label(self, text="Ready", anchor="w")
         self.status.pack(fill="x", side="bottom")
-
-
 
     # ---- panedwindow anti-collapse helpers ----
 
@@ -2889,7 +2787,6 @@ class PowerTraderHub(tk.Tk):
             self._paned_clamp_after_ids[key] = self.after(1, _run)
         except Exception:
             pass
-
 
     def _clamp_panedwindow_sashes(self, pw: ttk.Panedwindow) -> None:
         """
@@ -2958,14 +2855,10 @@ class PowerTraderHub(tk.Tk):
                         except Exception:
                             pass
 
-
         except Exception:
             pass
 
-
-
     # ---- process control ----
-
 
     def _reader_thread(self, proc: subprocess.Popen, q: "queue.Queue[str]", prefix: str) -> None:
         try:
@@ -3009,7 +2902,6 @@ class PowerTraderHub(tk.Tk):
         except Exception as e:
             messagebox.showerror("Failed to start", f"{p.name} failed to start:\n{e}")
 
-
     def _stop_process(self, p: ProcInfo) -> None:
         if not p.proc or p.proc.poll() is not None:
             return
@@ -3028,15 +2920,11 @@ class PowerTraderHub(tk.Tk):
 
         self._start_process(self.proc_neural, log_q=self.runner_log_q, prefix="[RUNNER] ")
 
-
     def start_trader(self) -> None:
         self._start_process(self.proc_trader, log_q=self.trader_log_q, prefix="[TRADER] ")
 
-
     def stop_neural(self) -> None:
         self._stop_process(self.proc_neural)
-
-
 
     def stop_trader(self) -> None:
         self._stop_process(self.proc_trader)
@@ -3107,7 +2995,6 @@ class PowerTraderHub(tk.Tk):
             self.after(250, self._poll_runner_ready_then_start_trader)
         except Exception:
             pass
-
 
     def _coin_is_trained(self, coin: str) -> bool:
         coin = coin.upper().strip()
@@ -3181,8 +3068,6 @@ class PowerTraderHub(tk.Tk):
                 seen.add(cc)
                 out.append(cc)
         return out
-
-
 
     def _training_status_map(self) -> Dict[str, str]:
         """
@@ -3259,7 +3144,6 @@ class PowerTraderHub(tk.Tk):
         if coin in self.trainers and self.trainers[coin].info.proc and self.trainers[coin].info.proc.poll() is None:
             return
 
-
         try:
             patterns = [
                 "trainer_last_training_time.txt",
@@ -3270,7 +3154,6 @@ class PowerTraderHub(tk.Tk):
                 "memory_weights_*.txt",
                 "neural_perfect_threshold_*.txt",
             ]
-
 
             deleted = 0
             for pat in patterns:
@@ -3313,9 +3196,6 @@ class PowerTraderHub(tk.Tk):
         except Exception as e:
             messagebox.showerror("Failed to start", f"Trainer for {coin} failed to start:\n{e}")
 
-
-
-
     def stop_trainer_for_selected_coin(self) -> None:
         coin = (self.trainer_coin_var.get() or "").strip().upper()
         lp = self.trainers.get(coin)
@@ -3325,7 +3205,6 @@ class PowerTraderHub(tk.Tk):
             lp.info.proc.terminate()
         except Exception:
             pass
-
 
     def stop_all_scripts(self) -> None:
         # Cancel any pending "wait for runner then start trader"
@@ -3340,7 +3219,6 @@ class PowerTraderHub(tk.Tk):
                 json.dump({"timestamp": time.time(), "ready": False, "stage": "stopped"}, f)
         except Exception:
             pass
-
 
     def _on_timeframe_changed(self, event) -> None:
         """
@@ -3478,7 +3356,6 @@ class PowerTraderHub(tk.Tk):
         # trade history (now mtime-cached inside)
         self._refresh_trade_history()
 
-
         # charts (throttle)
         now = time.time()
         if (now - self._last_chart_refresh) >= float(self.settings.get("chart_refresh_seconds", 10.0)):
@@ -3538,7 +3415,6 @@ class PowerTraderHub(tk.Tk):
                     except Exception:
                         pass
 
-
             self._last_chart_refresh = now
 
         # drain logs into panes
@@ -3559,8 +3435,6 @@ class PowerTraderHub(tk.Tk):
 
         self.status.config(text=f"{_now_str()} | hub_dir={self.hub_dir}")
         self.after(int(float(self.settings.get("ui_refresh_seconds", 1.0)) * 1000), self._tick)
-
-
 
     def _refresh_trader_status(self) -> None:
         # mtime cache: rebuilding the whole tree every tick is expensive with many rows
@@ -3594,8 +3468,6 @@ class PowerTraderHub(tk.Tk):
             for iid in self.trades_tree.get_children():
                 self.trades_tree.delete(iid)
             return
-
-
 
         ts = data.get("timestamp")
         try:
@@ -3664,10 +3536,8 @@ class PowerTraderHub(tk.Tk):
             self.lbl_acct_dca_spread.config(text=f"DCA Levels (spread): {spread_levels}")
             self.lbl_acct_dca_single.config(text=f"DCA Levels (single): {single_levels}")
 
-
         except Exception:
             pass
-
 
         positions = data.get("positions", {}) or {}
         self._last_positions = positions
@@ -3774,13 +3644,6 @@ class PowerTraderHub(tk.Tk):
                 ),
             )
 
-
-
-
-
-
-
-
     def _refresh_pnl(self) -> None:
         # mtime cache: avoid reading/parsing every tick
         try:
@@ -3798,7 +3661,6 @@ class PowerTraderHub(tk.Tk):
             return
         total = float(data.get("total_realized_profit_usd", 0.0))
         self.lbl_pnl.config(text=f"Total realized: {_fmt_money(total)}")
-
 
     def _refresh_trade_history(self) -> None:
         # mtime cache: avoid reading/parsing/rebuilding the list every tick
@@ -3876,8 +3738,6 @@ class PowerTraderHub(tk.Tk):
             except Exception:
                 self.hist_list.insert("end", line)
 
-
-
     def _refresh_coin_dependent_ui(self, prev_coins: List[str]) -> None:
         """
         After settings change: refresh every coin-driven UI element:
@@ -3928,7 +3788,6 @@ class PowerTraderHub(tk.Tk):
                 self._rebuild_coin_chart_tabs()
         except Exception:
             pass
-
 
     def _rebuild_neural_overview(self) -> None:
         """
@@ -4019,11 +3878,6 @@ class PowerTraderHub(tk.Tk):
                 self.after_idle(fn)
         except Exception:
             pass
-
-
-
-
-
 
     def _refresh_neural_overview(self) -> None:
         """
@@ -4120,8 +3974,6 @@ class PowerTraderHub(tk.Tk):
                     self.lbl_neural_overview_last.config(text="Last: N/A")
         except Exception:
             pass
-
-
 
     def _rebuild_coin_chart_tabs(self) -> None:
         """
@@ -4222,9 +4074,6 @@ class PowerTraderHub(tk.Tk):
         # Restore selection
         self._show_chart_page(selected)
 
-
-
-
     # ---- settings dialog ----
 
     def open_settings_dialog(self) -> None:
@@ -4314,8 +4163,6 @@ class PowerTraderHub(tk.Tk):
         settings_canvas.bind("<MouseWheel>", _wheel, add="+")  # Windows / Mac
         settings_canvas.bind("<Button-4>", lambda _e: settings_canvas.yview_scroll(-3, "units"), add="+")  # Linux
         settings_canvas.bind("<Button-5>", lambda _e: settings_canvas.yview_scroll(3, "units"), add="+")   # Linux
-
-
 
         # Make the entry column expand
         frm.columnconfigure(0, weight=0)  # labels
@@ -4470,7 +4317,7 @@ class PowerTraderHub(tk.Tk):
                 return
 
             try:
-                import requests  # for the 'Test credentials' button
+                import requests # for the 'Test credentials' button
             except Exception:
                 requests = None
 
@@ -4553,7 +4400,6 @@ class PowerTraderHub(tk.Tk):
             wiz_canvas.bind("<MouseWheel>", _wheel, add="+")  # Windows / Mac
             wiz_canvas.bind("<Button-4>", lambda _e: wiz_canvas.yview_scroll(-3, "units"), add="+")  # Linux
             wiz_canvas.bind("<Button-5>", lambda _e: wiz_canvas.yview_scroll(3, "units"), add="+")   # Linux
-
 
             key_path, secret_path = _api_paths()
 
@@ -4702,7 +4548,6 @@ class PowerTraderHub(tk.Tk):
                 # Show what you paste into Robinhood: base64(raw public key)
                 _set_pub_text(base64.b64encode(pub_raw).decode("utf-8"))
 
-
                 messagebox.showinfo(
                     "Step 1 complete",
                     "Public/Private keys generated.\n\n"
@@ -4715,8 +4560,6 @@ class PowerTraderHub(tk.Tk):
                     "  6) Robinhood shows an API Key (usually starts with 'rh...') — copy it right away\n\n"
                     "Then come back here and paste that API Key into the 'API Key' box."
                 )
-
-
 
             def copy_public_key():
                 txt = (pub_box.get("1.0", "end") or "").strip()
@@ -4793,7 +4636,6 @@ class PowerTraderHub(tk.Tk):
                 except Exception as e:
                     messagebox.showerror("Bad private key", f"Couldn't use your private key (r_secret.txt).\n\nError:\n{e}")
                     return
-
 
                 headers = {
                     "x-api-key": api_key,
@@ -4899,7 +4741,6 @@ class PowerTraderHub(tk.Tk):
                     )
                     return
 
-
                 # Small sanity warning (don’t block, just help)
                 if len(api_key) < 10:
                     if not messagebox.askyesno(
@@ -4959,9 +4800,7 @@ class PowerTraderHub(tk.Tk):
 
         _refresh_api_status()
 
-
         ttk.Separator(frm, orient="horizontal").grid(row=r, column=0, columnspan=3, sticky="ew", pady=10); r += 1
-
 
         add_row(r, "UI refresh seconds:", ui_refresh_var); r += 1
         add_row(r, "Chart refresh seconds:", chart_refresh_var); r += 1
@@ -5027,14 +4866,11 @@ class PowerTraderHub(tk.Tk):
                 messagebox.showinfo("Saved", "Settings saved.")
                 win.destroy()
 
-
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save settings:\n{e}")
 
-
         ttk.Button(btns, text="Save", command=save).pack(side="left")
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=8)
-
 
     # ---- close ----
 
@@ -5046,8 +4882,6 @@ class PowerTraderHub(tk.Tk):
             pass
         self.destroy()
 
-
 if __name__ == "__main__":
     app = PowerTraderHub()
     app.mainloop()
-

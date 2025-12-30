@@ -1,6 +1,53 @@
-from kucoin.client import Market
-market = Market(url='https://api.kucoin.com')
+"""
+pt_trainer.py
+
+Description:
+This module runs the training process for PowerTrader. The trainer
+process walks through historical candle data across multiple timeframes
+and records memory patterns paired with the next-candle outcome. Those
+memories are used to generate per-timeframe predicted candles (weighted
+averages of close matches) whose highs/lows are displayed by the Thinker
+and used to form trading decisions.
+
+Repository: https://github.com/garagesteve1155/PowerTrader_AI
+Author: Stephen Hughes (garagesteve1155)
+
+Key behavioral notes (informational only):
+
+- Training:
+	The trainer processes the entire coin history on several timeframes
+	and stores observed patterns. After each candle closes the trainer
+	adjusts pattern weights based on prediction accuracy so future
+	weighted-averages improve over time.
+
+- Thinker/Trader integration:
+	The Thinker uses predicted highs/lows from each timeframe to decide
+	start signals and DCA levels; the Trader uses those signals with
+	trailing profit and DCA rules described in other module banners.
+"""
+
+import os
+import sys
 import time
+import datetime
+from datetime import datetime
+import traceback
+import linecache
+import base64
+import calendar
+import hashlib
+import hmac
+import json
+import uuid
+import logging
+
+# third-party
+import psutil
+from kucoin.client import Market
+
+# instantiate KuCoin market client (kept at top-level like original)
+market = Market(url='https://api.kucoin.com')
+
 """
 <------------
 newest oldest
@@ -8,23 +55,13 @@ newest oldest
 oldest newest
 """
 avg50 = []
-import sys
-import datetime
-import traceback
-import linecache
-import base64
-import calendar
-import hashlib
-import hmac
-from datetime import datetime
 sells_count = 0
 prediction_prices_avg_list = []
 pt_server = 'server'
-import psutil
-import logging
 list_len = 0
 restarting = 'no'
 in_trade = 'no'
+restarted_yet = 0
 updowncount = 0
 updowncount1 = 0
 updowncount1_2 = 0
@@ -100,12 +137,8 @@ upordown4 = []
 upordown4_2 = []
 upordown4_3 = []
 upordown4_4 = []
-upordown5 = []
-import json
-import uuid
-import os
-
 # ---- speed knobs ----
+upordown5 = []
 VERBOSE = False  # set True if you want the old high-volume prints
 def vprint(*args, **kwargs):
 	if VERBOSE:
@@ -134,6 +167,9 @@ def load_memory(tf_choice):
 		data["memory_list"] = _read_text(f"memories_{tf_choice}.txt").replace("'","").replace(',','').replace('"','').replace(']','').replace('[','').split('~')
 	except:
 		data["memory_list"] = []
+	# The memory files are plain-text caches written by the trainer. We
+	# normalize and split them into Python lists here to avoid repeated
+	# file I/O during inner loops of the training routine.
 	try:
 		data["weight_list"] = _read_text(f"memory_weights_{tf_choice}.txt").replace("'","").replace(',','').replace('"','').replace(']','').replace('[','').split(' ')
 	except:
@@ -161,6 +197,8 @@ def flush_memory(tf_choice, force=False):
 			f.write("~".join([x for x in data["memory_list"] if str(x).strip() != ""]))
 	except:
 		pass
+	# flush_memory() batches writes to reduce disk churn. The `dirty` flag
+	# prevents redundant writes when nothing changed.
 	try:
 		with open(f"memory_weights_{tf_choice}.txt", "w+", encoding="utf-8") as f:
 			f.write(" ".join([str(x) for x in data["weight_list"] if str(x).strip() != ""]))
@@ -216,6 +254,9 @@ def restart_program():
 	"""Restarts the current program, with file objects and descriptors cleanup"""
 
 	try:
+		# Close open file descriptors before exec to avoid leaking handles
+		# across the restart. psutil provides a convenient cross-platform
+		# view of open files/sockets for the current process.
 		p = psutil.Process(os.getpid())
 		for handler in p.open_files() + p.connections():
 			os.close(handler.fd)
@@ -226,7 +267,7 @@ def restart_program():
 try:
 	if restarted_yet > 2:
 		restarted_yet = 0
-	else:	
+	else:
 		pass
 except:
 	restarted_yet = 0
@@ -262,8 +303,12 @@ try:
 except Exception:
 	pass
 
-
 the_big_index = 0
+# Main training loop note:
+# The primary loop below (`while True:`) resets per-iteration state and
+# then performs training/analysis for the configured `tf_choice`. It is
+# designed to be long-running and guarded by small I/O checkpoints so
+# external 'killer' files, status files, or restarts can be coordinated.
 while True:
 	list_len = 0
 	restarting = 'no'
@@ -415,7 +460,7 @@ while True:
 				continue
 		perc_comp = format((len(history_list)/how_far_to_look_back)*100,'.2f')
 		print('gathering history')
-		current_change = len(history_list)-list_len	
+		current_change = len(history_list)-list_len
 		try:
 			print('\n\n\n\n')
 			print(current_change)
@@ -462,7 +507,7 @@ while True:
 				else:
 					pass
 				candle_time = float(working_minute[0].replace('[',''))
-				openPrice = float(working_minute[1])                
+				openPrice = float(working_minute[1])
 				closePrice = float(working_minute[2])
 				highPrice = float(working_minute[3])
 				lowPrice = float(working_minute[4])
@@ -642,20 +687,9 @@ while True:
 				the_big_index += 1
 				restarted_yet = 0
 				avg50 = []
-				import sys
-				import datetime
-				import traceback
-				import linecache
-				import base64
-				import calendar
-				import hashlib
-				import hmac
-				from datetime import datetime
 				sells_count = 0
 				prediction_prices_avg_list = []
 				pt_server = 'server'
-				import psutil
-				import logging
 				list_len = 0
 				restarting = 'no'
 				in_trade = 'no'
@@ -735,8 +769,6 @@ while True:
 				upordown4_3 = []
 				upordown4_4 = []
 				upordown5 = []
-				import json
-				import uuid
 				def PrintException():
 					exc_type, exc_obj, tb = sys.exc_info()
 					f = tb.tb_frame
@@ -848,7 +880,7 @@ while True:
 							file.close()
 							file = open('memory_weights_'+tf_choice+'.txt','r')
 							weight_list = file.read().replace("'","").replace(',','').replace('"','').replace(']','').replace('[','').split(' ')
-							file.close()							
+							file.close()
 							file = open('memory_weights_high_'+tf_choice+'.txt','r')
 							high_weight_list = file.read().replace("'","").replace(',','').replace('"','').replace(']','').replace('[','').split(' ')
 							file.close()
@@ -992,7 +1024,7 @@ while True:
 								if index >= len(price_list2):
 									break
 								else:
-									continue	
+									continue
 					except:
 						PrintException()
 					if 1==1:
@@ -1149,7 +1181,7 @@ while True:
 									break
 								else:
 									perdex += 1
-									if perdex >= len(perfect):                                                                        
+									if perdex >= len(perfect):
 										perfect_yes = 'no'
 										break
 									else:
@@ -1164,7 +1196,7 @@ while True:
 									if len(upordown4) > 100:
 										del upordown4[0]
 									else:
-										pass 
+										pass
 								elif low_percent_difference_of_actuals <= low_var2-(low_var2*0.005) and percent_difference_of_actuals > low_var2:
 									upordown.append(1)
 									upordown3.append(1)
@@ -1172,7 +1204,7 @@ while True:
 									if len(upordown4) > 100:
 										del upordown4[0]
 									else:
-										pass  									
+										pass
 								elif high_percent_difference_of_actuals >= high_var2+(high_var2*0.005) and percent_difference_of_actuals > high_var2:
 									upordown3.append(0)
 									upordown2.append(0)
@@ -1190,7 +1222,7 @@ while True:
 									if len(upordown4) > 100:
 										del upordown4[0]
 									else:
-										pass  
+										pass
 								else:
 									pass
 							else:
@@ -1263,7 +1295,7 @@ while True:
 						while True:
 							try:
 								try:
-									price_list_length += 1		
+									price_list_length += 1
 									which_candle_of_the_prediction_index += 1
 									try:
 										if len(price_list2)>=int(len(price_list)*0.25) and restarted_yet < 2:
@@ -1280,20 +1312,9 @@ while True:
 										print('restarting')
 										restarting = 'yes'
 										avg50 = []
-										import sys
-										import datetime
-										import traceback
-										import linecache
-										import base64
-										import calendar
-										import hashlib
-										import hmac
-										from datetime import datetime
 										sells_count = 0
 										prediction_prices_avg_list = []
 										pt_server = 'server'
-										import psutil
-										import logging
 										list_len = 0
 										in_trade = 'no'
 										updowncount = 0
@@ -1372,8 +1393,6 @@ while True:
 										upordown4_3 = []
 										upordown4_4 = []
 										upordown5 = []
-										import json
-										import uuid
 										how_far_to_look_back = 100000
 										list_len = 0
 										print(the_big_index)
@@ -1460,7 +1479,7 @@ while True:
 											difference_list = []
 											list_of_predictions = all_predictions
 											close_enough_counter = []
-											which_pattern_length_index = 0								
+											which_pattern_length_index = 0
 											while True:
 												current_prediction_price = all_predictions[highlowind][which_candle_of_the_prediction_index]
 												high_current_prediction_price = high_all_predictions[highlowind][which_candle_of_the_prediction_index]
@@ -1564,7 +1583,7 @@ while True:
 
 												except:
 													PrintException()
-													pass										
+													pass
 												highlowind += 1
 												if highlowind >= len(all_predictions):
 													break

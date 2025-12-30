@@ -1,24 +1,74 @@
+"""
+pt_thinker.py
+
+Description:
+This module implements the AI "Thinker" used by PowerTrader. It contains
+helpers and long-running per-coin stepping logic that fetches market data
+(KuCoin and Robinhood), generates predictions, and exposes utilities used
+by the GUI and runner processes. This file intentionally performs some
+top-level initialization (for example, the KuCoin `Market` client) to
+preserve the original runtime behavior.
+
+Repository: https://github.com/garagesteve1155/PowerTrader_AI
+Author: Stephen Hughes (garagesteve1155)
+
+Notes on AI behavior and trading rules (informational only):
+
+- Start trade signal:
+	The AI's Thinker sends a start signal for a coin when the current ask
+	price drops below at least three of the AI's predicted low prices for
+	that coin. The AI predicts the active candle's high/low for each
+	timeframe from 1 hour up to 1 week; those predicted lows/highs are
+	the blue/orange horizontal lines shown on the charts.
+
+- DCA rules:
+	DCA (Dollar Cost Averaging) decisions use either the AI's current
+	price level tied to the number of DCA buys already executed for the
+	trade (e.g., the 4th blue line after trade start), or a hardcoded
+	drawdown percentage for the current level — whichever triggers first.
+	A maximum of 2 DCA orders are allowed within a rolling 24-hour
+	window to prevent over-allocating into prolonged downtrends.
+
+- Sell rules:
+	The bot uses a trailing profit margin to capture upside. The margin is
+	set to 5% if no DCA occurred on the trade, or 2.5% if any DCA occurred.
+	The trailing gap is 0.5% (the amount the price must exceed the margin
+	before the trailing line moves up). When the price drops below the
+	trailing margin after rising, the bot sells to capture gains.
+
+- Training summary:
+	Training iterates over the historical candles for a coin on multiple
+	timeframes and records each observed pattern along with the next
+	candle's outcome. The trainer generates predictions by weighted
+	averaging the closest memory-pattern matches for the current pattern;
+	this per-timeframe predicted candle yields the high/low lines used by
+	the Thinker.
+"""
+
 import os
-import time
-import random
-import requests
-from kucoin.client import Market
-market = Market(url='https://api.kucoin.com')
 import sys
+import time
 import datetime
-import traceback
-import linecache
-import base64
+from datetime import datetime
+import random
 import calendar
+import linecache
+import traceback
+import base64
 import hashlib
 import hmac
-from datetime import datetime
-import psutil
-import logging
 import json
 import uuid
+import logging
 
+# third-party
+import requests
+from kucoin.client import Market
+import psutil
 from nacl.signing import SigningKey
+
+# instantiate KuCoin market client (kept at top-level like original)
+market = Market(url='https://api.kucoin.com')
 
 # -----------------------------
 # Robinhood market-data (current ASK), same source as rhcb.py trader:
@@ -29,64 +79,67 @@ ROBINHOOD_BASE_URL = "https://trading.robinhood.com"
 
 _RH_MD = None  # lazy-init so import doesn't explode if creds missing
 
-
 class RobinhoodMarketData:
-    def __init__(self, api_key: str, base64_private_key: str, base_url: str = ROBINHOOD_BASE_URL, timeout: int = 10):
-        self.api_key = (api_key or "").strip()
-        self.base_url = (base_url or "").rstrip("/")
-        self.timeout = timeout
+	def __init__(self, api_key: str, base64_private_key: str, base_url: str = ROBINHOOD_BASE_URL, timeout: int = 10):
+		self.api_key = (api_key or "").strip()
+		self.base_url = (base_url or "").rstrip("/")
+		self.timeout = timeout
 
-        if not self.api_key:
-            raise RuntimeError("Robinhood API key is empty (r_key.txt).")
+		if not self.api_key:
+			raise RuntimeError("Robinhood API key is empty (r_key.txt).")
 
-        try:
-            raw_private = base64.b64decode((base64_private_key or "").strip())
-            self.private_key = SigningKey(raw_private)
-        except Exception as e:
-            raise RuntimeError(f"Failed to decode Robinhood private key (r_secret.txt): {e}")
+		try:
+			raw_private = base64.b64decode((base64_private_key or "").strip())
+			self.private_key = SigningKey(raw_private)
+		except Exception as e:
+			raise RuntimeError(f"Failed to decode Robinhood private key (r_secret.txt): {e}")
 
-        self.session = requests.Session()
+		self.session = requests.Session()
 
-    def _get_current_timestamp(self) -> int:
-        return int(time.time())
+	def _get_current_timestamp(self) -> int:
+		return int(time.time())
 
-    def _get_authorization_header(self, method: str, path: str, body: str, timestamp: int) -> dict:
-        # matches the trader's signing format
-        method = method.upper()
-        body = body or ""
-        message_to_sign = f"{self.api_key}{timestamp}{path}{method}{body}"
-        signed = self.private_key.sign(message_to_sign.encode("utf-8"))
-        signature_b64 = base64.b64encode(signed.signature).decode("utf-8")
+	def _get_authorization_header(self, method: str, path: str, body: str, timestamp: int) -> dict:
+		# matches the trader's signing format
+		method = method.upper()
+		body = body or ""
+		# Construct the exact message that the trader expects to sign.
+		# This order and concatenation MUST match the server/trader signing
+		# implementation so signatures validate correctly.
+		message_to_sign = f"{self.api_key}{timestamp}{path}{method}{body}"
+		signed = self.private_key.sign(message_to_sign.encode("utf-8"))
+		signature_b64 = base64.b64encode(signed.signature).decode("utf-8")
 
-        return {
-            "x-api-key": self.api_key,
-            "x-timestamp": str(timestamp),
-            "x-signature": signature_b64,
-            "Content-Type": "application/json",
-        }
+		return {
+			"x-api-key": self.api_key,
+			"x-timestamp": str(timestamp),
+			"x-signature": signature_b64,
+			"Content-Type": "application/json",
+		}
 
-    def make_api_request(self, method: str, path: str, body: str = "") -> dict:
-        url = f"{self.base_url}{path}"
-        ts = self._get_current_timestamp()
-        headers = self._get_authorization_header(method, path, body, ts)
+	def make_api_request(self, method: str, path: str, body: str = "") -> dict:
+		url = f"{self.base_url}{path}"
+		ts = self._get_current_timestamp()
+		headers = self._get_authorization_header(method, path, body, ts)
 
-        resp = self.session.request(method=method.upper(), url=url, headers=headers, data=body or None, timeout=self.timeout)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Robinhood HTTP {resp.status_code}: {resp.text}")
-        return resp.json()
+		# Perform a signed HTTP request. Exceptions are propagated to callers
+		# so higher-level logic can retry or handle failures as appropriate.
+		resp = self.session.request(method=method.upper(), url=url, headers=headers, data=body or None, timeout=self.timeout)
+		if resp.status_code >= 400:
+			raise RuntimeError(f"Robinhood HTTP {resp.status_code}: {resp.text}")
+		return resp.json()
 
-    def get_current_ask(self, symbol: str) -> float:
-        symbol = (symbol or "").strip().upper()
-        path = f"/api/v1/crypto/marketdata/best_bid_ask/?symbol={symbol}"
-        data = self.make_api_request("GET", path)
+	def get_current_ask(self, symbol: str) -> float:
+		symbol = (symbol or "").strip().upper()
+		path = f"/api/v1/crypto/marketdata/best_bid_ask/?symbol={symbol}"
+		data = self.make_api_request("GET", path)
 
-        if not data or "results" not in data or not data["results"]:
-            raise RuntimeError(f"Robinhood best_bid_ask returned no results for {symbol}: {data}")
+		if not data or "results" not in data or not data["results"]:
+			raise RuntimeError(f"Robinhood best_bid_ask returned no results for {symbol}: {data}")
 
-        result = data["results"][0]
-        # EXACTLY like rhcb.py's get_price(): ask_inclusive_of_buy_spread
-        return float(result["ask_inclusive_of_buy_spread"])
-
+		result = data["results"][0]
+		# EXACTLY like rhcb.py's get_price(): ask_inclusive_of_buy_spread
+		return float(result["ask_inclusive_of_buy_spread"])
 
 def robinhood_current_ask(symbol: str) -> float:
     """
@@ -105,7 +158,6 @@ def robinhood_current_ask(symbol: str) -> float:
                 "Run pt_trader.py once to create them (and to set your Robinhood API key)."
             )
 
-
         with open(key_path, "r", encoding="utf-8") as f:
             api_key = f.read()
         with open(secret_path, "r", encoding="utf-8") as f:
@@ -115,7 +167,6 @@ def robinhood_current_ask(symbol: str) -> float:
 
     return _RH_MD.get_current_ask(symbol)
 
-
 def restart_program():
 	"""Restarts the current program (no CLI args; uses hardcoded COIN_SYMBOLS)."""
 	try:
@@ -123,7 +174,10 @@ def restart_program():
 	except Exception as e:
 		print(f'Error during program restart: {e}')
 
-
+# Utility: PrintException prints a helpful one-line context for exceptions
+# by locating the source file/line and printing the offending line. This
+# mirrors a similar helper in other scripts and is useful when debugging
+# runtime errors during long-running loops.
 
 def PrintException():
 	exc_type, exc_obj, tb = sys.exc_info()
@@ -200,7 +254,6 @@ def coin_folder(sym: str) -> str:
 	# Your "main folder is BTC folder" convention:
 	return BASE_DIR if sym == 'BTC' else os.path.join(BASE_DIR, sym)
 
-
 # --- training freshness gate (mirrors pt_hub.py) ---
 _TRAINING_STALE_SECONDS = 14 * 24 * 60 * 60  # 14 days
 
@@ -259,11 +312,9 @@ def _write_runner_ready(ready: bool, stage: str, ready_coins=None, total_coins: 
 	}
 	_atomic_write_json(RUNNER_READY_PATH, obj)
 
-
 # Ensure folders exist for the current configured coins
 for _sym in CURRENT_COINS:
 	os.makedirs(coin_folder(_sym), exist_ok=True)
-
 
 distance = 0.5
 tf_choices = ['1hour', '2hour', '4hour', '8hour', '12hour', '1day', '1week']
@@ -370,10 +421,6 @@ def _sync_coins_from_settings():
 
 _write_runner_ready(False, stage="starting", ready_coins=[], total_coins=len(CURRENT_COINS))
 
-
-
-
-
 def init_coin(sym: str):
 	# switch into the coin's folder so ALL existing relative file I/O stays working
 	os.chdir(coin_folder(sym))
@@ -397,6 +444,10 @@ def init_coin(sym: str):
 		history_list = []
 		while True:
 			try:
+				# Fetch klines for `coin` at the configured timeframe index.
+				# The KuCoin client sometimes returns nested lists without a
+				# trailing comma; replace() calls normalize the string so the
+				# subsequent split() yields consistent elements.
 				history = str(market.get_kline(coin, tf_choices[ind])).replace(']]', '], ').replace('[[', '[')
 				break
 			except Exception as e:
@@ -428,7 +479,6 @@ for _sym in CURRENT_COINS:
 
 # restore CWD to base after init
 os.chdir(BASE_DIR)
-
 
 wallet_addr_list = []
 wallet_addr_users = []
@@ -514,7 +564,6 @@ def step_coin(sym: str):
 			pass
 		return
 
-
 	# ensure new readiness-version keys exist even if restarting from an older state dict
 	if 'bounds_version' not in st:
 		st['bounds_version'] = 0
@@ -547,7 +596,6 @@ def step_coin(sym: str):
 
 	last_difference_between = 0.0
 
-
 	# ====== ORIGINAL: fetch current candle for this timeframe index ======
 	while True:
 		history_list = []
@@ -575,7 +623,6 @@ def step_coin(sym: str):
 			break
 		except Exception:
 			continue
-
 
 	current_candle = 100 * ((closePrice - openPrice) / openPrice)
 
@@ -875,7 +922,6 @@ def step_coin(sym: str):
 
 			inder += 1
 
-
 		# rebuild bounds (same math as before)
 		prices_index = 0
 		low_bound_prices = []
@@ -982,8 +1028,6 @@ def step_coin(sym: str):
 			else:
 				_ready_coins.discard(sym)
 
-
-
 			all_ready = len(_ready_coins) >= len(COIN_SYMBOLS)
 			_write_runner_ready(
 				all_ready,
@@ -994,9 +1038,6 @@ def step_coin(sym: str):
 
 		except:
 			PrintException()
-
-
-
 
 		# write PM + DCA signals (same as before)
 		try:
@@ -1089,9 +1130,6 @@ def step_coin(sym: str):
 
 	states[sym] = st
 
-
-
-
 try:
 	while True:
 		# Hot-reload coins from GUI settings while running
@@ -1112,5 +1150,3 @@ try:
 
 except Exception:
 	PrintException()
-
-
