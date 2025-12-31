@@ -2,7 +2,7 @@
 pt_trader.py
 
 Description:
-This module implements the live trading component of PowerTrader. It
+This module implements the live trading component of PowerTraderAI. It
 wraps broker interactions (Robinhood), per-coin state management, DCA and
 trading decision logic, and local GUI persistence (trade history, PnL
 ledger, status). The `CryptoAPITrading` class encapsulates primary
@@ -10,6 +10,7 @@ trading workflows and safety checks used by the GUI.
 
 Repository: https://github.com/garagesteve1155/PowerTrader_AI
 Author: Stephen Hughes (garagesteve1155)
+Contributors: Dr-Dufenshmirtz
 
 Key behavioral notes (informational only):
 
@@ -119,19 +120,13 @@ def _load_gui_settings() -> dict:
 
 def _build_base_paths(main_dir_in: str, coins_in: list) -> dict:
 	"""
-	Safety rule:
-	- BTC uses main_dir directly
-	- other coins use <main_dir>/<SYM> ONLY if that folder exists
-	  (no fallback to BTC folder — avoids corrupting BTC data)
+	All coins use their own subfolders: <main_dir>/<SYM>
 	"""
-	out = {"BTC": main_dir_in}
+	out = {}
 	try:
 		for sym in coins_in:
 			sym = str(sym).strip().upper()
 			if not sym:
-				continue
-			if sym == "BTC":
-				out["BTC"] = main_dir_in
 				continue
 			sub = os.path.join(main_dir_in, sym)
 			if os.path.isdir(sub):
@@ -145,7 +140,7 @@ crypto_symbols = ['BTC', 'ETH', 'XRP', 'BNB', 'DOGE']
 
 # Default main_dir behavior if settings are missing
 main_dir = os.getcwd()
-base_paths = {"BTC": main_dir}
+base_paths = {}
 
 _last_settings_mtime = None
 
@@ -206,6 +201,73 @@ if not API_KEY or not BASE64_PRIVATE_KEY:
 # accidental live orders might be attempted. The GUI flow provides a
 # setup wizard to generate and persist these credentials.
 
+# -----------------------------
+# TRADING CONFIG
+# -----------------------------
+_TRADING_SETTINGS_PATH = os.environ.get("POWERTRADER_TRADING_SETTINGS") or os.path.join(
+	os.path.dirname(os.path.abspath(__file__)),
+	"trading_settings.json"
+)
+
+_trading_settings_cache = {
+	"mtime": None,
+	"config": {
+		"dca": {
+			"levels": [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0],
+			"max_buys_per_window": 2,
+			"window_hours": 24,
+			"position_multiplier": 2.0
+		},
+		"profit_margin": {
+			"trailing_gap_pct": 0.5,
+			"target_no_dca_pct": 5.0,
+			"target_with_dca_pct": 2.5
+		},
+		"entry_signals": {
+			"long_signal_min": 3,
+			"short_signal_max": 0
+		},
+		"position_sizing": {
+			"initial_allocation_pct": 0.005,
+			"min_allocation_usd": 0.5
+		},
+		"timing": {
+			"main_loop_delay_seconds": 0.5,
+			"post_trade_delay_seconds": 5
+		}
+	}
+}
+
+def _load_trading_config() -> dict:
+	"""
+	Reads trading_settings.json and returns config dict.
+	Caches by mtime so it is cheap to call frequently.
+	"""
+	try:
+		if not os.path.isfile(_TRADING_SETTINGS_PATH):
+			return dict(_trading_settings_cache["config"])
+
+		mtime = os.path.getmtime(_TRADING_SETTINGS_PATH)
+		if _trading_settings_cache["mtime"] == mtime:
+			return dict(_trading_settings_cache["config"])
+
+		with open(_TRADING_SETTINGS_PATH, "r", encoding="utf-8") as f:
+			data = json.load(f) or {}
+
+		# Merge with defaults to ensure all keys exist
+		config = dict(_trading_settings_cache["config"])
+		for key in data:
+			if isinstance(data[key], dict) and isinstance(config.get(key), dict):
+				config[key].update(data[key])
+			else:
+				config[key] = data[key]
+
+		_trading_settings_cache["mtime"] = mtime
+		_trading_settings_cache["config"] = config
+		return dict(config)
+	except Exception:
+		return dict(_trading_settings_cache["config"])
+
 class CryptoAPITrading:
     def __init__(self):
         # keep a copy of the folder map (same idea as trader.py)
@@ -216,15 +278,18 @@ class CryptoAPITrading:
         self.private_key = SigningKey(private_key_seed)
         self.base_url = "https://trading.robinhood.com"
 
+        # Load trading config
+        trading_cfg = _load_trading_config()
+
         self.dca_levels_triggered = {}  # Track DCA levels for each crypto
-        self.dca_levels = [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0]  # Moved to instance variable
+        self.dca_levels = trading_cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0])
 
         # --- Trailing profit margin (per-coin state) ---
         # Each coin keeps its own trailing PM line, peak, and "was above line" flag.
         self.trailing_pm = {}  # { "BTC": {"active": bool, "line": float, "peak": float, "was_above": bool}, ... }
-        self.trailing_gap_pct = 0.5  # 0.5% trail gap behind peak
-        self.pm_start_pct_no_dca = 5.0
-        self.pm_start_pct_with_dca = 2.5
+        self.trailing_gap_pct = trading_cfg.get("profit_margin", {}).get("trailing_gap_pct", 0.5)
+        self.pm_start_pct_no_dca = trading_cfg.get("profit_margin", {}).get("target_no_dca_pct", 5.0)
+        self.pm_start_pct_with_dca = trading_cfg.get("profit_margin", {}).get("target_with_dca_pct", 2.5)
 
         self.cost_basis = self.calculate_cost_basis()  # Initialize cost basis at startup
         self.initialize_dca_levels()  # Initialize DCA levels based on historical buy orders
@@ -245,8 +310,8 @@ class CryptoAPITrading:
         }
 
         # --- DCA rate-limit (per trade, per coin, rolling 24h window) ---
-        self.max_dca_buys_per_24h = 2
-        self.dca_window_seconds = 24 * 60 * 60
+        self.max_dca_buys_per_window = trading_cfg.get("dca", {}).get("max_buys_per_window", 2)
+        self.dca_window_seconds = trading_cfg.get("dca", {}).get("window_hours", 24) * 60 * 60
         self._dca_buy_ts = {}         # { "BTC": [ts, ts, ...] } (DCA buys only)
         self._dca_last_sell_ts = {}   # { "BTC": ts_of_last_sell }
         self._seed_dca_window_from_history()
@@ -383,7 +448,7 @@ class CryptoAPITrading:
         - DCA assist: levels 4-7 map to trader DCA stages 0-3 (trade starts at level 3 => stage 0)
         """
         sym = str(symbol).upper().strip()
-        folder = base_paths.get(sym, main_dir if sym == "BTC" else os.path.join(main_dir, sym))
+        folder = base_paths.get(sym, os.path.join(main_dir, sym))
         path = os.path.join(folder, "long_dca_signal.txt")
         try:
             with open(path, "r") as f:
@@ -403,7 +468,7 @@ class CryptoAPITrading:
         - DCA assist: levels 4-7 map to trader DCA stages 0-3 (trade starts at level 3 => stage 0)
         """
         sym = str(symbol).upper().strip()
-        folder = base_paths.get(sym, main_dir if sym == "BTC" else os.path.join(main_dir, sym))
+        folder = base_paths.get(sym, os.path.join(main_dir, sym))
         path = os.path.join(folder, "short_dca_signal.txt")
         try:
             with open(path, "r") as f:
@@ -1090,9 +1155,15 @@ class CryptoAPITrading:
 
                 if trail_line_disp > 0:
                     dist_to_trail_pct = ((current_sell_price - trail_line_disp) / trail_line_disp) * 100.0
-            file = open(symbol+'_current_price.txt', 'w+')
-            file.write(str(current_buy_price))
-            file.close()
+            
+            # Write current price to hub_data folder
+            try:
+                price_file = os.path.join(HUB_DATA_DIR, symbol + '_current_price.txt')
+                with open(price_file, 'w') as f:
+                    f.write(str(current_buy_price))
+            except Exception:
+                pass
+            
             positions[symbol] = {
                 "quantity": quantity,
                 "avg_cost_basis": avg_cost_basis,
@@ -1191,7 +1262,9 @@ class CryptoAPITrading:
                         self._reset_dca_window_for_trade(symbol, sold=True)
 
                         print(f"  Successfully sold {quantity} {symbol}.")
-                        time.sleep(5)
+                        trading_cfg = _load_trading_config()
+                        post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 5)
+                        time.sleep(post_delay)
                         holdings = self.get_holdings()
                         continue
 
@@ -1234,15 +1307,17 @@ class CryptoAPITrading:
                 print(f"  DCAing {symbol} (stage {current_stage + 1}) via {reason}.")
 
                 print(f"  Current Value: ${value:.2f}")
-                dca_amount = value * 2
+                trading_cfg = _load_trading_config()
+                dca_multiplier = trading_cfg.get("dca", {}).get("position_multiplier", 2.0)
+                dca_amount = value * dca_multiplier
                 print(f"  DCA Amount: ${dca_amount:.2f}")
                 print(f"  Buying Power: ${buying_power:.2f}")
 
                 recent_dca = self._dca_window_count(symbol)
-                if recent_dca >= int(getattr(self, "max_dca_buys_per_24h", 2)):
+                if recent_dca >= int(getattr(self, "max_dca_buys_per_window", 2)):
                     print(
                         f"  Skipping DCA for {symbol}. "
-                        f"Already placed {recent_dca} DCA buys in the last 24h (max {self.max_dca_buys_per_24h})."
+                        f"Already placed {recent_dca} DCA buys in the last {self.dca_window_seconds/3600:.0f}h (max {self.max_dca_buys_per_window})."
                     )
 
                 elif dca_amount <= buying_power:
@@ -1288,11 +1363,11 @@ class CryptoAPITrading:
                 current_buy_price = current_buy_prices.get(full_symbol, 0.0)
                 current_sell_price = current_sell_prices.get(full_symbol, 0.0)
 
-                # keep the per-coin current price file behavior for consistency
+                # Write current price to hub_data folder
                 try:
-                    file = open(sym + '_current_price.txt', 'w+')
-                    file.write(str(current_buy_price))
-                    file.close()
+                    price_file = os.path.join(HUB_DATA_DIR, sym + '_current_price.txt')
+                    with open(price_file, 'w') as f:
+                        f.write(str(current_buy_price))
                 except Exception:
                     pass
 
@@ -1320,9 +1395,12 @@ class CryptoAPITrading:
         if not trading_pairs:
             return
 
-        allocation_in_usd = total_account_value * (0.00005/len(crypto_symbols))
-        if allocation_in_usd < 0.5:
-            allocation_in_usd = 0.5
+        trading_cfg = _load_trading_config()
+        allocation_pct = trading_cfg.get("position_sizing", {}).get("initial_allocation_pct", 0.005)
+        min_alloc = trading_cfg.get("position_sizing", {}).get("min_allocation_usd", 0.5)
+        allocation_in_usd = total_account_value * (allocation_pct / len(crypto_symbols))
+        if allocation_in_usd < min_alloc:
+            allocation_in_usd = min_alloc
 
         holding_full_symbols = [f"{h['asset_code']}-USD" for h in holdings.get("results", [])]
 
@@ -1340,8 +1418,12 @@ class CryptoAPITrading:
             buy_count = self._read_long_dca_signal(base_symbol)
             sell_count = self._read_short_dca_signal(base_symbol)
 
-            # Default behavior: long must be >= 3 and short must be 0
-            if not (buy_count >= 3 and sell_count == 0):
+            # Entry signal thresholds from config
+            trading_cfg = _load_trading_config()
+            long_min = max(1, min(7, int(trading_cfg.get("entry_signals", {}).get("long_signal_min", 3))))
+            short_max = max(0, min(7, int(trading_cfg.get("entry_signals", {}).get("short_signal_max", 0))))
+            
+            if not (buy_count >= long_min and sell_count <= short_max):
                 start_index += 1
                 continue
 
@@ -1368,7 +1450,9 @@ class CryptoAPITrading:
                     f"Starting new trade for {full_symbol} (AI start signal long={buy_count}, short={sell_count}). "
                     f"Allocating ${allocation_in_usd:.2f}."
                 )
-                time.sleep(5)
+                trading_cfg = _load_trading_config()
+                post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 5)
+                time.sleep(post_delay)
                 holdings = self.get_holdings()
                 holding_full_symbols = [f"{h['asset_code']}-USD" for h in holdings.get("results", [])]
 
@@ -1376,7 +1460,9 @@ class CryptoAPITrading:
 
         # If any trades were made, recalculate the cost basis
         if trades_made:
-            time.sleep(5)
+            trading_cfg = _load_trading_config()
+            post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 5)
+            time.sleep(post_delay)
             print("Trades were made in this iteration. Recalculating cost basis...")
             new_cost_basis = self.calculate_cost_basis()
             if new_cost_basis:
@@ -1415,7 +1501,9 @@ class CryptoAPITrading:
         while True:
             try:
                 self.manage_trades()
-                time.sleep(0.5)
+                trading_cfg = _load_trading_config()
+                loop_delay = trading_cfg.get("timing", {}).get("main_loop_delay_seconds", 0.5)
+                time.sleep(loop_delay)
             except Exception as e:
                 print(traceback.format_exc())
 

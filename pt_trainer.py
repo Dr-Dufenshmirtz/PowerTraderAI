@@ -2,7 +2,7 @@
 pt_trainer.py
 
 Description:
-This module runs the training process for PowerTrader. The trainer
+This module runs the training process for PowerTraderAI. The trainer
 process walks through historical candle data across multiple timeframes
 and records memory patterns paired with the next-candle outcome. Those
 memories are used to generate per-timeframe predicted candles (weighted
@@ -11,6 +11,7 @@ and used to form trading decisions.
 
 Repository: https://github.com/garagesteve1155/PowerTrader_AI
 Author: Stephen Hughes (garagesteve1155)
+Contributors: Dr-Dufenshmirtz
 
 Key behavioral notes (informational only):
 

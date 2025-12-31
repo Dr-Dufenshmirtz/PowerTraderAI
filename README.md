@@ -1,7 +1,7 @@
 # PowerTrader_AI
 Fully automated crypto trading powered by a custom price prediction AI and a structured/tiered DCA system.
 
-“It’s an instance-based (kNN/kernel-style) predictor with online per-instance reliability weighting, used as a multi-timeframe trading signal.” - ChatGPT on the type of AI used in this trading bot.
+"It's an instance-based (kNN/kernel-style) predictor with online per-instance reliability weighting, used as a multi-timeframe trading signal." - ChatGPT on the type of AI used in this trading bot.
 
 So what exactly does that mean?
 
@@ -15,21 +15,15 @@ Yes, it is EXTREMELY simple. Yes, it is STILL considered AI.
 
 Here is how the trading bot utilizes the price prediction ai to automatically make trades:
 
-For determining when to start trades, the AI's Thinker script sends a signal to start a trade for a coin if the ask price for the coin drops below at least 3 of the the AI's predicted low prices for the coin (it predicts the currently active candle's high and low prices for each timeframe across all timeframes from 1hr to 1wk).
+For determining when to start trades, the AI's Thinker script sends a signal to start a trade for a coin if the ask price for the coin drops below at least 3 of the the AI's predicted low prices for the coin (it predicts the currently active candle's high and low prices for each timeframe across all timeframes from 1hr to 1wk). **This threshold can be customized** in the Trading Settings (default: LONG signal minimum of 3, SHORT signal maximum of 0).
 
-For determining when to DCA, it uses either the current price level from the AI that is tied to the current amount of DCA buys that have been done on the trade (for example, right after a trade starts when 3 blue lines get crossed, its first DCA wont happen until the price crosses the 4th line, so on so forth), or it uses the hardcoded drawdown % for its current level, whichever it hits first. It allows a max of 2 DCAs within a rolling 24hr window to keep from dumping all of your money in too quickly on coins that are having an extended downtrend!
+For determining when to DCA, it uses either the current price level from the AI that is tied to the current amount of DCA buys that have been done on the trade (for example, right after a trade starts when 3 blue lines get crossed, its first DCA wont happen until the price crosses the 4th line, so on so forth), or it uses the configurable drawdown % for its current level, whichever it hits first. It allows a max of 2 DCAs within a rolling 24hr window to keep from dumping all of your money in too quickly on coins that are having an extended downtrend! **DCA levels and limits can be customized** in the Trading Settings.
 
-For determining when to sell, the bot uses a trailing profit margin to maximize the potential gains. The margin line is set at either 5% gain if no DCA has happened on the trade, or 2.5% gain if any DCA has happened. The trailing margin gap is 0.5% (this is the amount the price has to go over the profit margin to begin raising the profit margin up to TRAIL after the price and maximize how much profit is gained once the price drops below the profit margin again and the bot sells the trade.
+For determining when to sell, the bot uses a trailing profit margin to maximize the potential gains. The margin line is set at either 5% gain if no DCA has happened on the trade, or 2.5% gain if any DCA has happened. The trailing margin gap is 0.5% (this is the amount the price has to go over the profit margin to begin raising the profit margin up to TRAIL after the price and maximize how much profit is gained once the price drops below the profit margin again and the bot sells the trade). **All profit margin percentages can be customized** in the Trading Settings.
 
 # Setup & First-Time Use (Windows)
 
-THESE INSTRUCTIONS WERE WRITTEN BY AI! PLEASE LET ME KNOW IF THERE ARE ANY ERRORS OR ISSUES WITH THIS SETUP PROCESS!
-
-If you have any crypto holdings in Robinhood currently, either transfer them out of your Robinhood account or sell them to dollars BEFORE going through this setup process!
-
-This page walks you through installing PowerTrader AI from start to finish, in the exact order a first-time user should do it.  
-No coding knowledge needed.  
-These instructions are Windows-based but PowerTrader AI can run on any OS.
+PowerTrader AI is designed to be easy to set up with minimal technical knowledge required.
 
 **Important:** This software can place trades automatically. You are responsible for what it does.  
 Keep your API keys private. We are not giving financial advice. We are not responsible for any losses incurred. You are fully responsible for doing your own due diligence to learn and understand this trading system and to use it properly. You are fully responsible for all of your money, and any gains or losses.
@@ -38,84 +32,90 @@ Keep your API keys private. We are not giving financial advice. We are not respo
 
 ## Step 1 — Install Python
 
-1. Go to **python.org** and download Python for Windows.
+1. Go to **python.org** and download Python for Windows (Python 3.10 or newer recommended).
 2. Run the installer.
-3. **Check the box** that says: **“Add Python to PATH”**.
+3. **Check the box** that says: **"Add Python to PATH"** (very important!).
 4. Click **Install Now**.
 
 ---
 
-## Step 2 — Download PowerTrader AI
+## Step 2 — Download PowerTraderAI
 
-1. Do not download the zip file of the repo! There is an issue I have to fix.
-2. Create a folder on your computer, like: `C:\PowerTraderAI\`
-3. On the PowerTrader_AI repo page, right click pt_hub.py and click "Save Link As..." and save it into the folder you just created.
-4. Repeat that for all files in the repo (except the readme and the license).
-
----
-
-## Step 3 — Install PowerTrader AI (one command)
-
-1. Open **Command Prompt** (Windows key → type **cmd** → Enter).
-2. Go into your PowerTrader AI folder. Example:
-
-   `cd C:\PowerTraderAI`
-
-3. Install everything PowerTrader AI needs:
-
-   `python -m pip install -r requirements.txt`
+1. Go to the PowerTrader_AI GitHub repository.
+2. Click the green **Code** button, then **Download ZIP**.
+3. Extract the ZIP file to a folder on your computer, like: `C:\PowerTraderAI\`
 
 ---
 
-## Step 4 — Start PowerTrader AI
+## Step 3 — Launch PowerTraderAI (One-Click Setup!)
 
-From the same Command Prompt window (inside your PowerTrader folder), run:
+1. Navigate to your PowerTraderAI folder.
+2. Double-click **PowerTraderAI.pyw** to launch the hub.
 
-`python pt_hub.py`
+**First Launch:** PowerTraderAI will automatically check if required packages are installed. If not, it will ask permission to install them. Click **Install** and wait a few minutes while it sets everything up. This is a one-time process.
 
-The app that opens is the **PowerTrader Hub**.  
-This is the only thing you need to run day-to-day.
+**Note:** Windows may ask for permission to run Python or install packages - this is normal, click Allow/Yes.
 
----
-
-## Step 5 — Set your folder, coins, and Robinhood keys (inside the Hub)
-
-### Open Settings
-
-In the Hub, open **Settings** and do this in order:
-
-- **Main Neural Folder**: set this to the same folder that contains `pt_hub.py` (recommended easiest).
-- **Choose which coins to trade**: start with **BTC**.
-- **While you are still in Settings**, click **Robinhood API Setup** and do this:
-
-1. Click **Generate Keys**.
-2. Copy the **Public Key** shown in the wizard.
-3. On Robinhood, add a new API key and paste that Public Key.
-4. Set permissions to allow trading (the wizard tells you what to select).
-5. Robinhood will show your API Key (often starts with `rh`). Copy it.
-6. Paste the API Key back into the wizard and click **Save**.
-7. Close the wizard and go back to the **Settings** screen.
-8. **NOW** click **Save** in Settings.
-
-After saving, you will have two files in your PowerTrader AI folder:  
-`r_key.txt` and `r_secret.txt`  
-Keep them private.
-
-PowerTrader AI uses a simple folder style:  
-**BTC uses the main folder**, and other coins use their own subfolders (like `ETH\`).
+The **PowerTraderAI Hub** will open - this is your main control center.
 
 ---
 
-## Step 6 — Train (inside the Hub)
+## Step 4 — Configure Settings
 
-Training builds the system’s coin “memory” so it can generate signals.
+### Initial Setup
+
+On first launch, PowerTraderAI automatically uses the folder where you extracted it as the main directory. You can change this later if needed.
+
+In the Hub, click **Settings → Hub Settings** and configure:
+
+- **Coins (comma-separated)**: Start with **BTC** for your first run. Add more coins later (ETH, XRP, BNB, DOGE, etc.).
+- **Main neural folder**: Already set to your PowerTraderAI directory by default.
+- **Robinhood API**: Click **Setup Wizard** and follow these steps:
+  1. Click **Generate Keys**.
+  2. Copy the **Public Key** shown in the wizard.
+  3. On Robinhood.com, go to your account settings and add a new API key. Paste the Public Key.
+  4. Set permissions to allow READ and TRADE (the wizard tells you what to select).
+  5. Robinhood will show your API Key (often starts with `rh`). Copy it.
+  6. Paste the API Key back into the wizard and click **Save**.
+  7. Close the wizard and go back to the **Settings** screen.
+
+Click **Save** when done.
+
+After saving, you will have two credential files in your PowerTraderAI folder:  
+`r_key.txt` and `r_secret.txt` - Keep them private and secure!
+
+PowerTraderAI uses a simple folder structure:  
+**All coins use their own subfolders** (like `BTC\`, `ETH\`, etc.).
+
+### Optional: Customize Trading Behavior
+
+PowerTraderAI includes customizable settings so you can tune the bot to your preferences:
+
+**Settings → Trading Settings** - Configure trading parameters:
+- Entry signal thresholds (when to start trades)
+- DCA (Dollar Cost Averaging) levels and limits
+- Profit margin targets and trailing gaps
+- Position sizing
+- Timing delays
+
+**Settings → Training Settings** - Configure AI training:
+- Staleness threshold (how often to retrain)
+- Auto-retrain option (future feature)
+
+All settings have built-in validation and save instantly. Changes to trading settings take effect immediately (no restart needed). The white marker lines on the Neural Signal display update automatically when you change entry signal thresholds.
+
+---
+
+## Step 5 — Train (inside the Hub)
+
+Training builds the system's coin "memory" so it can generate signals.
 
 1. In the Hub, click **Train All**.
-2. Wait until training finishes.
+2. Wait until training finishes (this can take several minutes for each coin).
 
 ---
 
-## Step 7 — Start the system (inside the Hub)
+## Step 6 — Start the system (inside the Hub)
 
 When training is done, click:
 
@@ -123,7 +123,7 @@ When training is done, click:
 
 The Hub will:  
 **start pt_thinker.py**, wait until it is ready, then it will **start pt_trader.py**.  
-You don’t need to manually start separate programs. The hub handles everything!
+You don't need to manually start separate programs. The hub handles everything!
 
 ---
 
@@ -133,13 +133,36 @@ You don’t need to manually start separate programs. The hub handles everything
 - Higher number = stronger signal.
 - LONG = buy-direction signal. SHORT = sell-direction signal.
 
-A TRADE WILL START FOR A COIN IF THAT COIN REACHES A LONG LEVEL OF 3 OR HIGHER WHILE HAVING A SHORT LEVEL OF 0!
+A TRADE WILL START FOR A COIN IF THAT COIN REACHES A LONG LEVEL OF 3 OR HIGHER WHILE HAVING A SHORT LEVEL OF 0! (Customizable in Trading Settings)
+
+---
+
+## Customizing Trading Behavior
+
+PowerTraderAI allows you to customize trading parameters without editing code:
+
+### Trading Settings
+Access via **Settings → Trading Settings** in the Hub menu:
+- **Entry Signals**: Adjust LONG/SHORT signal thresholds for when trades start
+- **DCA Levels**: Configure drawdown percentages and maximum DCA buys per 24 hours
+- **Profit Margins**: Set trailing gap and target percentages (with/without DCA)
+- **Position Sizing**: Control initial allocation percentage and minimum trade size
+- **Timing**: Adjust main loop delay and post-trade delays
+
+The white marker lines on the Neural Signal tiles update automatically when you change entry signal settings - no restart required!
+
+### Training Settings
+Access via **Settings → Training Settings** in the Hub menu:
+- **Staleness Days**: How many days before retraining is recommended (default: 14)
+- **Auto-retrain**: Enable automatic retraining when data becomes stale (future feature)
+
+Changes to settings files take effect immediately for the trading bot (hot-reload with caching).
 
 ---
 
 ## Adding more coins (later)
 
-1. Open **Settings**
+1. Open **Settings → Hub Settings**
 2. Add one new coin
 3. Save
 4. Click **Train All**, wait for training to complete
@@ -149,7 +172,7 @@ A TRADE WILL START FOR A COIN IF THAT COIN REACHES A LONG LEVEL OF 3 OR HIGHER W
 
 ## Donate
 
-PowerTrader AI is COMPLETELY free and open source! If you want to support the project:
+PowerTraderAI is COMPLETELY free and open source! If you want to support the project:
 
 - Cash App: **$garagesteve**
 - PayPal: **@garagesteve**
@@ -159,4 +182,4 @@ PowerTrader AI is COMPLETELY free and open source! If you want to support the pr
 
 ## License
 
-PowerTrader AI is released under the **Apache 2.0** license.
+PowerTraderAI is released under the **Apache 2.0** license.

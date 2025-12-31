@@ -3,7 +3,7 @@ from __future__ import annotations
 pt_hub.py
 
 Description:
-This module implements the Tkinter GUI hub for PowerTrader. It provides
+This module implements the Tkinter GUI hub for PowerTraderAI. It provides
 widgets, layout helpers, and the bridge logic that reads/writes hub_data
 files to monitor and control the `trainer`, `thinker`, and `trader`
 processes. The hub displays predicted levels, trade status, and provides
@@ -11,6 +11,7 @@ controls to start/stop components.
 
 Repository: https://github.com/garagesteve1155/PowerTrader_AI
 Author: Stephen Hughes (garagesteve1155)
+Contributors: Dr-Dufenshmirtz
 
 Relevant behavior notes (informational only):
 
@@ -47,17 +48,125 @@ from matplotlib.patches import Rectangle
 from matplotlib.ticker import FuncFormatter
 from matplotlib.transforms import blended_transform_factory
 
+# Default theme colors
 DARK_BG = "#070B10"
 DARK_BG2 = "#0B1220"
 DARK_PANEL = "#0E1626"
 DARK_PANEL2 = "#121C2F"
 DARK_BORDER = "#243044"
 DARK_FG = "#C7D1DB"
+LIVE_OUTPUT_FG = "#C7D1DB"  # Live output text color (defaults to DARK_FG)
 DARK_MUTED = "#8B949E"
 DARK_ACCENT = "#00FF66"
 DARK_ACCENT2 = "#00E5FF"
 DARK_SELECT_BG = "#17324A"
 DARK_SELECT_FG = "#00FF66"
+
+# Chart colors
+CHART_CANDLE_UP = "#00cc00"
+CHART_CANDLE_DOWN = "#ff3333"
+CHART_NEURAL_LONG = "#3399ff"
+CHART_NEURAL_SHORT = "#ff9933"
+CHART_SELL_LINE = "#00ff00"
+CHART_DCA_LINE = "#ff0000"
+CHART_ASK_LINE = "#9933ff"
+CHART_BID_LINE = "#00cccc"
+CHART_ACCOUNT_LINE = "#00aaff"
+
+# Font settings
+LOG_FONT_FAMILY = "TkFixedFont"
+LOG_FONT_SIZE = 8
+CHART_FONT_FAMILY = "sans-serif"
+CHART_LABEL_FONT_SIZE = 9
+
+THEME_SETTINGS_FILE = "theme_settings.json"
+
+DEFAULT_THEME = {
+    "bg": DARK_BG,
+    "bg2": DARK_BG2,
+    "panel": DARK_PANEL,
+    "panel2": DARK_PANEL2,
+    "border": DARK_BORDER,
+    "fg": DARK_FG,
+    "live_output_fg": LIVE_OUTPUT_FG,
+    "muted": DARK_MUTED,
+    "accent": DARK_ACCENT,
+    "accent2": DARK_ACCENT2,
+    "select_bg": DARK_SELECT_BG,
+    "select_fg": DARK_SELECT_FG,
+    "chart_candle_up": CHART_CANDLE_UP,
+    "chart_candle_down": CHART_CANDLE_DOWN,
+    "chart_neural_long": CHART_NEURAL_LONG,
+    "chart_neural_short": CHART_NEURAL_SHORT,
+    "chart_sell_line": CHART_SELL_LINE,
+    "chart_dca_line": CHART_DCA_LINE,
+    "chart_ask_line": CHART_ASK_LINE,
+    "chart_bid_line": CHART_BID_LINE,
+    "chart_account_line": CHART_ACCOUNT_LINE,
+    "font_family": "Segoe UI",
+    "font_size": 10,
+    "log_font_family": "Consolas",
+    "log_font_size": 8,
+    "chart_font_family": "Segoe UI",
+    "chart_label_font_size": 9
+}
+
+def _load_theme_settings():
+    """Load custom theme settings if enabled, override global color constants."""
+    global DARK_BG, DARK_BG2, DARK_PANEL, DARK_PANEL2, DARK_BORDER
+    global DARK_FG, DARK_MUTED, DARK_ACCENT, DARK_ACCENT2, DARK_SELECT_BG, DARK_SELECT_FG
+    global CHART_CANDLE_UP, CHART_CANDLE_DOWN, CHART_NEURAL_LONG, CHART_NEURAL_SHORT
+    global CHART_SELL_LINE, CHART_DCA_LINE, CHART_ASK_LINE, CHART_BID_LINE, CHART_ACCOUNT_LINE
+    global LOG_FONT_FAMILY, LOG_FONT_SIZE, CHART_FONT_FAMILY, CHART_LABEL_FONT_SIZE
+    
+    # Check if custom theme is enabled
+    try:
+        settings = _safe_read_json(SETTINGS_FILE)
+        if not settings or not settings.get("use_custom_theme", False):
+            return
+        
+        theme_path = os.path.join(os.path.dirname(__file__), THEME_SETTINGS_FILE)
+        if not os.path.isfile(theme_path):
+            return
+        
+        theme = _safe_read_json(theme_path)
+        if not theme:
+            return
+        
+        # Override color constants
+        global DARK_BG, DARK_BG2, DARK_PANEL, DARK_PANEL2, DARK_BORDER, DARK_FG, LIVE_OUTPUT_FG
+        global DARK_MUTED, DARK_ACCENT, DARK_ACCENT2, DARK_SELECT_BG, DARK_SELECT_FG
+        global CHART_CANDLE_UP, CHART_CANDLE_DOWN, CHART_NEURAL_LONG, CHART_NEURAL_SHORT
+        global CHART_SELL_LINE, CHART_DCA_LINE, CHART_ASK_LINE, CHART_BID_LINE, CHART_ACCOUNT_LINE
+        global LOG_FONT_FAMILY, LOG_FONT_SIZE, CHART_FONT_FAMILY, CHART_LABEL_FONT_SIZE
+        
+        DARK_BG = theme.get("bg", DARK_BG)
+        DARK_BG2 = theme.get("bg2", DARK_BG2)
+        DARK_PANEL = theme.get("panel", DARK_PANEL)
+        DARK_PANEL2 = theme.get("panel2", DARK_PANEL2)
+        DARK_BORDER = theme.get("border", DARK_BORDER)
+        DARK_FG = theme.get("fg", DARK_FG)
+        LIVE_OUTPUT_FG = theme.get("live_output_fg", DARK_FG)
+        DARK_MUTED = theme.get("muted", DARK_MUTED)
+        DARK_ACCENT = theme.get("accent", DARK_ACCENT)
+        DARK_ACCENT2 = theme.get("accent2", DARK_ACCENT2)
+        DARK_SELECT_BG = theme.get("select_bg", DARK_SELECT_BG)
+        DARK_SELECT_FG = theme.get("select_fg", DARK_SELECT_FG)
+        CHART_CANDLE_UP = theme.get("chart_candle_up", CHART_CANDLE_UP)
+        CHART_CANDLE_DOWN = theme.get("chart_candle_down", CHART_CANDLE_DOWN)
+        CHART_NEURAL_LONG = theme.get("chart_neural_long", CHART_NEURAL_LONG)
+        CHART_NEURAL_SHORT = theme.get("chart_neural_short", CHART_NEURAL_SHORT)
+        CHART_SELL_LINE = theme.get("chart_sell_line", CHART_SELL_LINE)
+        CHART_DCA_LINE = theme.get("chart_dca_line", CHART_DCA_LINE)
+        CHART_ASK_LINE = theme.get("chart_ask_line", CHART_ASK_LINE)
+        CHART_BID_LINE = theme.get("chart_bid_line", CHART_BID_LINE)
+        CHART_ACCOUNT_LINE = theme.get("chart_account_line", CHART_ACCOUNT_LINE)
+        LOG_FONT_FAMILY = theme.get("log_font_family", LOG_FONT_FAMILY)
+        LOG_FONT_SIZE = theme.get("log_font_size", LOG_FONT_SIZE)
+        CHART_FONT_FAMILY = theme.get("chart_font_family", CHART_FONT_FAMILY)
+        CHART_LABEL_FONT_SIZE = theme.get("chart_label_font_size", CHART_LABEL_FONT_SIZE)
+    except Exception:
+        pass
 
 @dataclass
 class _WrapItem:
@@ -220,10 +329,25 @@ class NeuralSignalTile(ttk.Frame):
                 )
             )
 
-        # Marker line after the 2nd block (between 2 and 3) -- LONG side only.
-        # With display_levels=7, "after 2nd block" means boundary after seg index 1.
-        trade_y = int(round(yb - (2 * self._bar_h / self._display_levels)))
-        self.canvas.create_line(x0, trade_y, x1, trade_y, fill=DARK_FG, width=2)
+        # Marker lines based on entry signal config
+        # LONG side marker (shows minimum long signal to start trades)
+        trading_cfg = _load_trading_config()
+        long_min = trading_cfg.get("entry_signals", {}).get("long_signal_min", 3)
+        long_min = max(1, min(7, int(long_min)))  # Clamp to valid range 1-7
+        
+        long_trade_y = int(round(yb - ((long_min - 1) * self._bar_h / self._display_levels)))
+        self._long_marker = self.canvas.create_line(x0, long_trade_y, x1, long_trade_y, fill=DARK_FG, width=2)
+        
+        # SHORT side marker (shows maximum short signal allowed for long entries)
+        short_max = trading_cfg.get("entry_signals", {}).get("short_signal_max", 0)
+        short_max = max(0, min(7, int(short_max)))  # Clamp to valid range 0-7
+        
+        short_trade_y = int(round(yb - (short_max * self._bar_h / self._display_levels)))
+        self._short_marker = self.canvas.create_line(x2, short_trade_y, x3, short_trade_y, fill=DARK_FG, width=2)
+        
+        # Store last known config values for change detection
+        self._last_long_min = long_min
+        self._last_short_max = short_max
 
         self.value_lbl = ttk.Label(self, text="L:0 S:0")
         self.value_lbl.pack(anchor="center", pady=(1, 0))
@@ -290,12 +414,41 @@ class NeuralSignalTile(ttk.Frame):
         self._set_level(self._long_segs, ls, self._long_fill)
         self._set_level(self._short_segs, ss, self._short_fill)
 
+    def update_marker_lines(self) -> None:
+        """Update marker line positions based on current trading config."""
+        trading_cfg = _load_trading_config()
+        long_min = trading_cfg.get("entry_signals", {}).get("long_signal_min", 3)
+        long_min = max(1, min(7, int(long_min)))  # Clamp to valid range 1-7
+        
+        short_max = trading_cfg.get("entry_signals", {}).get("short_signal_max", 0)
+        short_max = max(0, min(7, int(short_max)))  # Clamp to valid range 0-7
+        
+        # Only update if values changed
+        if long_min != self._last_long_min or short_max != self._last_short_max:
+            self._last_long_min = long_min
+            self._last_short_max = short_max
+            
+            # Calculate geometry
+            yb = self._pad + self._bar_h
+            x0 = self._pad
+            x1 = x0 + self._bar_w
+            x2 = x1 + self._gap
+            x3 = x2 + self._bar_w
+            
+            # Update LONG marker position
+            long_trade_y = int(round(yb - ((long_min - 1) * self._bar_h / self._display_levels)))
+            self.canvas.coords(self._long_marker, x0, long_trade_y, x1, long_trade_y)
+            
+            # Update SHORT marker position
+            short_trade_y = int(round(yb - (short_max * self._bar_h / self._display_levels)))
+            self.canvas.coords(self._short_marker, x2, short_trade_y, x3, short_trade_y)
+
 # -----------------------------
 # Settings / Paths
 # -----------------------------
 
 DEFAULT_SETTINGS = {
-    "main_neural_dir": r"C:\PowerTrader_AI",
+    "main_neural_dir": "",  # if blank, defaults to script directory
     "coins": ["BTC", "ETH", "XRP", "BNB", "DOGE"],
     "default_timeframe": "1hour",
     "timeframes": [
@@ -311,9 +464,57 @@ DEFAULT_SETTINGS = {
     "script_neural_trainer": "pt_trainer.py",
     "script_trader": "pt_trader.py",
     "auto_start_scripts": False,
+    "use_custom_theme": False,
 }
 
 SETTINGS_FILE = "gui_settings.json"
+TRADING_SETTINGS_FILE = "trading_settings.json"
+TRAINING_SETTINGS_FILE = "training_settings.json"
+
+# Default trading config
+DEFAULT_TRADING_CONFIG = {
+    "dca": {
+        "levels": [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0],
+        "max_buys_per_window": 2,
+        "window_hours": 24,
+        "position_multiplier": 2.0
+    },
+    "profit_margin": {
+        "trailing_gap_pct": 0.5,
+        "target_no_dca_pct": 5.0,
+        "target_with_dca_pct": 2.5
+    },
+    "entry_signals": {
+        "long_signal_min": 3,
+        "short_signal_max": 0
+    },
+    "position_sizing": {
+        "initial_allocation_pct": 0.005,
+        "min_allocation_usd": 0.5
+    },
+    "timing": {
+        "main_loop_delay_seconds": 0.5,
+        "post_trade_delay_seconds": 5
+    }
+}
+
+# Default training config
+DEFAULT_TRAINING_CONFIG = {
+    "staleness_days": 14,
+    "auto_train_when_stale": False
+}
+
+# Cache for trading config
+_trading_config_cache = {
+    "mtime": None,
+    "config": dict(DEFAULT_TRADING_CONFIG)
+}
+
+# Cache for training config
+_training_config_cache = {
+    "mtime": None,
+    "config": dict(DEFAULT_TRAINING_CONFIG)
+}
 
 def _safe_read_json(path: str) -> Optional[dict]:
     try:
@@ -327,6 +528,62 @@ def _safe_write_json(path: str, data: dict) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, path)
+
+def _load_trading_config() -> dict:
+    """Load trading config with caching (similar to gui_settings pattern)."""
+    try:
+        if not os.path.isfile(TRADING_SETTINGS_FILE):
+            return dict(_trading_config_cache["config"])
+        
+        mtime = os.path.getmtime(TRADING_SETTINGS_FILE)
+        if _trading_config_cache["mtime"] == mtime:
+            return dict(_trading_config_cache["config"])
+        
+        data = _safe_read_json(TRADING_SETTINGS_FILE)
+        if not data:
+            return dict(_trading_config_cache["config"])
+        
+        # Merge with defaults to ensure all keys exist
+        config = dict(DEFAULT_TRADING_CONFIG)
+        for key in data:
+            if isinstance(data[key], dict) and isinstance(config.get(key), dict):
+                config[key].update(data[key])
+            else:
+                config[key] = data[key]
+        
+        _trading_config_cache["mtime"] = mtime
+        _trading_config_cache["config"] = config
+        return dict(config)
+    except Exception:
+        return dict(_trading_config_cache["config"])
+
+def _load_training_config() -> dict:
+    """Load training config with caching (similar to gui_settings pattern)."""
+    try:
+        if not os.path.isfile(TRAINING_SETTINGS_FILE):
+            return dict(_training_config_cache["config"])
+        
+        mtime = os.path.getmtime(TRAINING_SETTINGS_FILE)
+        if _training_config_cache["mtime"] == mtime:
+            return dict(_training_config_cache["config"])
+        
+        data = _safe_read_json(TRAINING_SETTINGS_FILE)
+        if not data:
+            return dict(_training_config_cache["config"])
+        
+        # Merge with defaults to ensure all keys exist
+        config = dict(DEFAULT_TRAINING_CONFIG)
+        for key in data:
+            if isinstance(data[key], dict) and isinstance(config.get(key), dict):
+                config[key].update(data[key])
+            else:
+                config[key] = data[key]
+        
+        _training_config_cache["mtime"] = mtime
+        _training_config_cache["config"] = config
+        return dict(config)
+    except Exception:
+        return dict(_training_config_cache["config"])
 
 def _read_trade_history_jsonl(path: str) -> List[dict]:
     """
@@ -423,26 +680,22 @@ def _now_str() -> str:
 
 def build_coin_folders(main_dir: str, coins: List[str]) -> Dict[str, str]:
     """
-    Mirrors your convention:
-      BTC uses main_dir directly
-      other coins typically have subfolders inside main_dir (auto-detected)
+    All coins use subfolders, including BTC.
+    Auto-detects coin folders inside main_dir.
 
     Returns { "BTC": "...", "ETH": "...", ... }
     """
     out: Dict[str, str] = {}
     main_dir = main_dir or os.getcwd()
 
-    # BTC folder
-    out["BTC"] = main_dir
-
-    # Auto-detect subfolders
+    # Auto-detect subfolders for all coins
     if os.path.isdir(main_dir):
         for name in os.listdir(main_dir):
             p = os.path.join(main_dir, name)
             if not os.path.isdir(p):
                 continue
             sym = name.upper().strip()
-            if sym in coins and sym != "BTC":
+            if sym in coins:
                 out[sym] = p
 
     # Fallbacks for missing ones
@@ -695,11 +948,11 @@ class CandleChart(ttk.Frame):
         # Reserve bottom space so date+time x tick labels are always visible
         # Also reserve right space so the price labels (Bid/Ask/DCA/Sell) can sit outside the plot.
         # Also reserve a bit of top space so the title never gets clipped.
-        self.fig.subplots_adjust(bottom=0.20, right=0.87, top=0.8)
+        self.fig.subplots_adjust(bottom=0.15, right=0.87, top=0.93)
 
         self.ax = self.fig.add_subplot(111)
         self._apply_dark_chart_style()
-        self.ax.set_title(f"{coin}", color=DARK_FG)
+        self.ax.set_title(f"{coin}", color=DARK_FG, fontsize=CHART_LABEL_FONT_SIZE, fontfamily=CHART_FONT_FAMILY)
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         canvas_w = self.canvas.get_tk_widget()
@@ -748,7 +1001,7 @@ class CandleChart(ttk.Frame):
         try:
             self.fig.patch.set_facecolor(DARK_BG)
             self.ax.set_facecolor(DARK_PANEL)
-            self.ax.tick_params(colors=DARK_FG)
+            self.ax.tick_params(colors=DARK_FG, labelsize=CHART_LABEL_FONT_SIZE)
             for spine in self.ax.spines.values():
                 spine.set_color(DARK_BORDER)
             self.ax.grid(True, color=DARK_BORDER, linewidth=0.6, alpha=0.35)
@@ -810,7 +1063,7 @@ class CandleChart(ttk.Frame):
             self._apply_dark_chart_style()
 
         if not candles:
-            self.ax.set_title(f"{self.coin} ({tf}) - no candles", color=DARK_FG)
+            self.ax.set_title(f"{self.coin} ({tf}) - no candles", color=DARK_FG, fontsize=CHART_LABEL_FONT_SIZE, fontfamily=CHART_FONT_FAMILY)
             self.canvas.draw_idle()
             return
 
@@ -828,7 +1081,7 @@ class CandleChart(ttk.Frame):
             l = float(c["low"])
 
             up = cl >= o
-            candle_color = "green" if up else "red"
+            candle_color = CHART_CANDLE_UP if up else CHART_CANDLE_DOWN
 
             # wick
             self.ax.plot([i, i], [l, h], linewidth=1, color=candle_color)
@@ -847,7 +1100,7 @@ class CandleChart(ttk.Frame):
                     facecolor=candle_color,
                     edgecolor=candle_color,
                     linewidth=1,
-                    alpha=0.9,
+                    alpha=1.0,
                 )
             )
 
@@ -868,39 +1121,39 @@ class CandleChart(ttk.Frame):
         # Overlay Neural levels (blue long, orange short)
         for lv in long_levels:
             try:
-                self.ax.axhline(y=float(lv), linewidth=1, color="blue", alpha=0.8)
+                self.ax.axhline(y=float(lv), linewidth=1, color=CHART_NEURAL_LONG, alpha=1.0)
             except Exception:
                 pass
 
         for lv in short_levels:
             try:
-                self.ax.axhline(y=float(lv), linewidth=1, color="orange", alpha=0.8)
+                self.ax.axhline(y=float(lv), linewidth=1, color=CHART_NEURAL_SHORT, alpha=1.0)
             except Exception:
                 pass
 
         # Overlay Trailing PM line (sell) and next DCA line
         try:
             if trail_line is not None and float(trail_line) > 0:
-                self.ax.axhline(y=float(trail_line), linewidth=1.5, color="green", alpha=0.95)
+                self.ax.axhline(y=float(trail_line), linewidth=1.5, color=CHART_SELL_LINE, alpha=1.0)
         except Exception:
             pass
 
         try:
             if dca_line_price is not None and float(dca_line_price) > 0:
-                self.ax.axhline(y=float(dca_line_price), linewidth=1.5, color="red", alpha=0.95)
+                self.ax.axhline(y=float(dca_line_price), linewidth=1.5, color=CHART_DCA_LINE, alpha=1.0)
         except Exception:
             pass
 
         # Overlay current ask/bid prices
         try:
             if current_buy_price is not None and float(current_buy_price) > 0:
-                self.ax.axhline(y=float(current_buy_price), linewidth=1.5, color="purple", alpha=0.95)
+                self.ax.axhline(y=float(current_buy_price), linewidth=1.5, color=CHART_ASK_LINE, alpha=1.0)
         except Exception:
             pass
 
         try:
             if current_sell_price is not None and float(current_sell_price) > 0:
-                self.ax.axhline(y=float(current_sell_price), linewidth=1.5, color="teal", alpha=0.95)
+                self.ax.axhline(y=float(current_sell_price), linewidth=1.5, color=CHART_BID_LINE, alpha=1.0)
         except Exception:
             pass
 
@@ -934,23 +1187,24 @@ class CandleChart(ttk.Frame):
                     transform=trans,
                     ha="left",
                     va="center",
-                    fontsize=8,
+                    fontsize=CHART_LABEL_FONT_SIZE,
+                    fontfamily=CHART_FONT_FAMILY,
                     color=color,
                     bbox=dict(
                         facecolor=DARK_BG2,
                         edgecolor=color,
                         boxstyle="round,pad=0.18",
-                        alpha=0.85,
+                        alpha=1.0,
                     ),
                     zorder=20,
                     clip_on=False,
                 )
 
             # Map to your terminology: Ask=buy line, Bid=sell line
-            _label_right(current_buy_price, "ASK", "purple")
-            _label_right(current_sell_price, "BID", "teal")
-            _label_right(dca_line_price, "DCA", "red")
-            _label_right(trail_line, "SELL", "green")
+            _label_right(current_buy_price, "ASK", CHART_ASK_LINE)
+            _label_right(current_sell_price, "BID", CHART_BID_LINE)
+            _label_right(dca_line_price, "DCA", CHART_DCA_LINE)
+            _label_right(trail_line, "SELL", CHART_SELL_LINE)
         except Exception:
             pass
 
@@ -973,10 +1227,10 @@ class CandleChart(ttk.Frame):
 
                     if side == "buy":
                         label = "DCA" if tag == "DCA" else "BUY"
-                        color = "purple" if tag == "DCA" else "red"
+                        color = CHART_ASK_LINE if tag == "DCA" else CHART_DCA_LINE
                     elif side == "sell":
                         label = "SELL"
-                        color = "green"
+                        color = CHART_SELL_LINE
                     else:
                         continue
 
@@ -1022,7 +1276,8 @@ class CandleChart(ttk.Frame):
                         textcoords="offset points",
                         xytext=(0, 10),
                         ha="center",
-                        fontsize=8,
+                        fontsize=CHART_LABEL_FONT_SIZE,
+                        fontfamily=CHART_FONT_FAMILY,
                         color=DARK_FG,
                         zorder=7,
                     )
@@ -1031,7 +1286,22 @@ class CandleChart(ttk.Frame):
 
         self.ax.set_xlim(-0.5, (len(candles) - 0.5) + 0.6)
 
-        self.ax.set_title(f"{self.coin} ({tf})", color=DARK_FG)
+        self.ax.set_title(f"{self.coin} ({tf})", color=DARK_FG, fontsize=CHART_LABEL_FONT_SIZE, fontfamily=CHART_FONT_FAMILY)
+
+        # Format y-axis with dollar signs (tiered precision: $1000+=0, $100-999=2, $10-99=3, <$10=4)
+        try:
+            def format_price(y, _pos):
+                if y >= 1000:
+                    return f"${y:,.0f}"
+                elif y >= 100:
+                    return f"${y:,.2f}"
+                elif y >= 10:
+                    return f"${y:,.3f}"
+                else:
+                    return f"${y:,.4f}"
+            self.ax.yaxis.set_major_formatter(FuncFormatter(format_price))
+        except Exception:
+            pass
 
         # x tick labels (date + time) - evenly spaced, never overlapping duplicates
         n = len(candles)
@@ -1061,7 +1331,7 @@ class CandleChart(ttk.Frame):
             self.ax.minorticks_off()
             self.ax.set_xticks(tick_x)
             self.ax.set_xticklabels(tick_lbl)
-            self.ax.tick_params(axis="x", labelsize=8)
+            self.ax.tick_params(axis="x", labelsize=CHART_LABEL_FONT_SIZE)
         except Exception:
             pass
 
@@ -1110,11 +1380,11 @@ class AccountValueChart(ttk.Frame):
         # Reserve bottom space so date+time x tick labels are always visible
         # Also reserve right space so the price labels (Bid/Ask/DCA/Sell) can sit outside the plot.
         # Also reserve a bit of top space so the title never gets clipped.
-        self.fig.subplots_adjust(bottom=0.25, right=0.87, top=0.8)
+        self.fig.subplots_adjust(bottom=0.18, right=0.88, top=0.92)
 
         self.ax = self.fig.add_subplot(111)
         self._apply_dark_chart_style()
-        self.ax.set_title("Account Value", color=DARK_FG)
+        self.ax.set_title("Account Value", color=DARK_FG, fontsize=CHART_LABEL_FONT_SIZE, fontfamily=CHART_FONT_FAMILY)
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         canvas_w = self.canvas.get_tk_widget()
@@ -1160,7 +1430,7 @@ class AccountValueChart(ttk.Frame):
         try:
             self.fig.patch.set_facecolor(DARK_BG)
             self.ax.set_facecolor(DARK_PANEL)
-            self.ax.tick_params(colors=DARK_FG)
+            self.ax.tick_params(colors=DARK_FG, labelsize=CHART_LABEL_FONT_SIZE)
             for spine in self.ax.spines.values():
                 spine.set_color(DARK_BORDER)
             self.ax.grid(True, color=DARK_BORDER, linewidth=0.6, alpha=0.35)
@@ -1273,7 +1543,7 @@ class AccountValueChart(ttk.Frame):
             self._apply_dark_chart_style()
 
         if not points:
-            self.ax.set_title("Account Value - no data", color=DARK_FG)
+            self.ax.set_title("Account Value - no data", color=DARK_FG, fontsize=CHART_LABEL_FONT_SIZE, fontfamily=CHART_FONT_FAMILY)
             self.last_update_label.config(text="Last: N/A")
             self.canvas.draw_idle()
             return
@@ -1282,7 +1552,7 @@ class AccountValueChart(ttk.Frame):
         # Only show cent-level changes (hide sub-cent noise)
         ys = [round(p[1], 2) for p in points]
 
-        self.ax.plot(xs, ys, linewidth=1.5)
+        self.ax.plot(xs, ys, linewidth=1.5, color=CHART_ACCOUNT_LINE)
 
         # --- Trade dots (BUY / DCA / SELL) for ALL coins ---
         try:
@@ -1299,10 +1569,10 @@ class AccountValueChart(ttk.Frame):
 
                     if side == "buy":
                         action_label = "DCA" if tag == "DCA" else "BUY"
-                        color = "purple" if tag == "DCA" else "red"
+                        color = CHART_ASK_LINE if tag == "DCA" else CHART_DCA_LINE
                     elif side == "sell":
                         action_label = "SELL"
-                        color = "green"
+                        color = CHART_SELL_LINE
                     else:
                         continue
 
@@ -1338,7 +1608,8 @@ class AccountValueChart(ttk.Frame):
                         textcoords="offset points",
                         xytext=(0, 10),
                         ha="center",
-                        fontsize=8,
+                        fontsize=CHART_LABEL_FONT_SIZE,
+                        fontfamily=CHART_FONT_FAMILY,
                         color=DARK_FG,
                         zorder=7,
                     )
@@ -1346,9 +1617,14 @@ class AccountValueChart(ttk.Frame):
         except Exception:
             pass
 
-        # Force 2 decimals on the y-axis labels (account value chart only)
+        # Account value formatting (real dollars: $1000+=0 decimals, <$1000=2 decimals)
         try:
-            self.ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _pos: f"${y:,.2f}"))
+            def format_price(y, _pos):
+                if y >= 1000:
+                    return f"${y:,.0f}"
+                else:
+                    return f"${y:,.2f}"
+            self.ax.yaxis.set_major_formatter(FuncFormatter(format_price))
         except Exception:
             pass
 
@@ -1376,16 +1652,16 @@ class AccountValueChart(ttk.Frame):
             self.ax.minorticks_off()
             self.ax.set_xticks(tick_x)
             self.ax.set_xticklabels(tick_lbl)
-            self.ax.tick_params(axis="x", labelsize=8)
+            self.ax.tick_params(axis="x", labelsize=CHART_LABEL_FONT_SIZE)
         except Exception:
             pass
 
         self.ax.set_xlim(-0.5, (len(points) - 0.5) + 0.6)
 
         try:
-            self.ax.set_title(f"Account Value ({_fmt_money(ys[-1])})", color=DARK_FG)
+            self.ax.set_title(f"Account Value ({_fmt_money(ys[-1])})", color=DARK_FG, fontsize=CHART_LABEL_FONT_SIZE, fontfamily=CHART_FONT_FAMILY)
         except Exception:
-            self.ax.set_title("Account Value", color=DARK_FG)
+            self.ax.set_title("Account Value", color=DARK_FG, fontsize=CHART_LABEL_FONT_SIZE, fontfamily=CHART_FONT_FAMILY)
 
         try:
             self.last_update_label.config(
@@ -1420,20 +1696,26 @@ class LogProc:
 class PowerTraderHub(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("PowerTrader - Hub")
+        self.title("PowerTraderAI - Hub")
         self.geometry("1400x820")
 
         # Hard minimum window size so the UI can't be shrunk to a point where panes vanish.
         # (Keeps things usable even if someone aggressively resizes.)
         self.minsize(980, 640)
+        
+        # Auto-start variable for menu checkbutton
+        self.auto_start_var = tk.BooleanVar()
 
         # Debounce map for panedwindow clamp operations
         self._paned_clamp_after_ids: Dict[str, str] = {}
 
-        # Force one and only one theme: dark mode everywhere.
-        self._apply_forced_dark_mode()
-
         self.settings = self._load_settings()
+        
+        # Load custom theme if enabled (overrides color constants)
+        _load_theme_settings()
+
+        # Force one and only one theme: dark mode everywhere (must be after theme load)
+        self._apply_forced_dark_mode()
 
         self.project_dir = os.path.abspath(os.path.dirname(__file__))
 
@@ -1492,6 +1774,9 @@ class PowerTraderHub(tk.Tk):
 
         self._build_menu()
         self._build_layout()
+        
+        # Set auto-start variable after settings are loaded
+        self.auto_start_var.set(bool(self.settings.get("auto_start_scripts", False)))
 
         # Refresh charts immediately when a timeframe is changed (don't wait for the 10s throttle).
         self.bind_all("<<TimeframeChanged>>", self._on_timeframe_changed)
@@ -1746,6 +2031,11 @@ class PowerTraderHub(tk.Tk):
 
         merged = dict(DEFAULT_SETTINGS)
         merged.update(data)
+        
+        # If main_neural_dir is empty, use script directory
+        if not merged.get("main_neural_dir"):
+            merged["main_neural_dir"] = os.path.abspath(os.path.dirname(__file__))
+        
         # normalize
         merged["coins"] = [c.upper().strip() for c in merged.get("coins", [])]
         return merged
@@ -1759,9 +2049,9 @@ class PowerTraderHub(tk.Tk):
     def _ensure_alt_coin_folders_and_trainer_on_startup(self) -> None:
         """
         Startup behavior (mirrors Settings-save behavior):
-        - For every alt coin in the coin list that does NOT have its folder yet:
+        - For every coin in the coin list that does NOT have its folder yet:
             - create the folder
-            - copy neural_trainer.py from the MAIN (BTC) folder into the new folder
+            - copy neural_trainer.py from the MAIN folder into the new coin folder
         """
         try:
             coins = [str(c).strip().upper() for c in (self.settings.get("coins") or []) if str(c).strip()]
@@ -1769,7 +2059,7 @@ class PowerTraderHub(tk.Tk):
 
             trainer_name = os.path.basename(str(self.settings.get("script_neural_trainer", "neural_trainer.py")))
 
-            # Source trainer: MAIN folder (BTC folder)
+            # Source trainer: MAIN folder (preferred location)
             src_main_trainer = os.path.join(main_dir, trainer_name)
 
             # Best-effort fallback if the main folder doesn't have it (keeps behavior robust)
@@ -1777,9 +2067,6 @@ class PowerTraderHub(tk.Tk):
             src_trainer_path = src_main_trainer if os.path.isfile(src_main_trainer) else src_cfg_trainer
 
             for coin in coins:
-                if coin == "BTC":
-                    continue  # BTC uses main folder; no per-coin folder needed
-
                 coin_dir = os.path.join(main_dir, coin)
 
                 created = False
@@ -1815,6 +2102,7 @@ class PowerTraderHub(tk.Tk):
             fg=DARK_FG,
             activebackground=DARK_SELECT_BG,
             activeforeground=DARK_SELECT_FG,
+            selectcolor=DARK_FG,
         )
         m_scripts.add_command(label="Start All", command=self.start_all_scripts)
         m_scripts.add_command(label="Stop All", command=self.stop_all_scripts)
@@ -1824,6 +2112,12 @@ class PowerTraderHub(tk.Tk):
         m_scripts.add_separator()
         m_scripts.add_command(label="Start Trader", command=self.start_trader)
         m_scripts.add_command(label="Stop Trader", command=self.stop_trader)
+        m_scripts.add_separator()
+        m_scripts.add_checkbutton(
+            label="Auto-start on Launch",
+            command=self.toggle_auto_start,
+            variable=self.auto_start_var
+        )
         menubar.add_cascade(label="Scripts", menu=m_scripts)
 
         m_settings = tk.Menu(
@@ -1834,7 +2128,9 @@ class PowerTraderHub(tk.Tk):
             activebackground=DARK_SELECT_BG,
             activeforeground=DARK_SELECT_FG,
         )
-        m_settings.add_command(label="Settings...", command=self.open_settings_dialog)
+        m_settings.add_command(label="Hub Settings...", command=self.open_settings_dialog)
+        m_settings.add_command(label="Trading Settings...", command=self.open_trading_settings_dialog)
+        m_settings.add_command(label="Training Settings...", command=self.open_training_settings_dialog)
         menubar.add_cascade(label="Settings", menu=m_settings)
 
         m_file = tk.Menu(
@@ -2271,11 +2567,13 @@ class PowerTraderHub(tk.Tk):
         # LEFT: 3) Live Output (pane)
         # ----------------------------
 
-        # Half-size fixed-width font for live logs (Runner/Trader/Trainers)
-        _base = tkfont.nametofont("TkFixedFont")
-        _half = max(6, int(round(abs(int(_base.cget("size"))) / 2.0)))
-        self._live_log_font = _base.copy()
-        self._live_log_font.configure(size=_half)
+        # Configurable font for live logs (Runner/Trader/Trainers)
+        try:
+            _base = tkfont.nametofont(LOG_FONT_FAMILY)
+            self._live_log_font = _base.copy()
+        except Exception:
+            self._live_log_font = tkfont.Font(family="Courier", size=LOG_FONT_SIZE)
+        self._live_log_font.configure(size=LOG_FONT_SIZE)
 
         logs_frame = ttk.LabelFrame(left_split, text="Live Output")
         self.logs_nb = ttk.Notebook(logs_frame)
@@ -2290,7 +2588,7 @@ class PowerTraderHub(tk.Tk):
             wrap="none",
             font=self._live_log_font,
             bg=DARK_PANEL,
-            fg=DARK_FG,
+            fg=LIVE_OUTPUT_FG,
             insertbackground=DARK_FG,
             selectbackground=DARK_SELECT_BG,
             selectforeground=DARK_SELECT_FG,
@@ -2312,7 +2610,7 @@ class PowerTraderHub(tk.Tk):
             wrap="none",
             font=self._live_log_font,
             bg=DARK_PANEL,
-            fg=DARK_FG,
+            fg=LIVE_OUTPUT_FG,
             insertbackground=DARK_FG,
             selectbackground=DARK_SELECT_BG,
             selectforeground=DARK_SELECT_FG,
@@ -2355,7 +2653,7 @@ class PowerTraderHub(tk.Tk):
             wrap="none",
             font=self._live_log_font,
             bg=DARK_PANEL,
-            fg=DARK_FG,
+            fg=LIVE_OUTPUT_FG,
             insertbackground=DARK_FG,
             selectbackground=DARK_SELECT_BG,
             selectforeground=DARK_SELECT_FG,
@@ -2894,6 +3192,8 @@ class PowerTraderHub(tk.Tk):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
             if log_q is not None:
@@ -2940,6 +3240,14 @@ class PowerTraderHub(tk.Tk):
 
         # Otherwise, toggle means "start"
         self.start_all_scripts()
+    
+    def toggle_auto_start(self) -> None:
+        """Toggle auto-start scripts setting and save to gui_settings.json."""
+        self.settings["auto_start_scripts"] = bool(self.auto_start_var.get())
+        try:
+            _safe_write_json(SETTINGS_FILE, self.settings)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save auto-start setting:\n{e}")
 
     def _read_runner_ready(self) -> Dict[str, Any]:
         try:
@@ -3107,28 +3415,26 @@ class PowerTraderHub(tk.Tk):
         self.stop_neural()
 
         # --- IMPORTANT ---
-        # Match the trader's folder convention:
-        #   BTC runs from the main neural folder
-        #   Alts run from their own coin subfolder
+        # All coins use their own folder (BTC uses BTC/, ETH uses ETH/, etc.)
         coin_cwd = self.coin_folders.get(coin, self.project_dir)
 
         # Use the trainer script that lives INSIDE that coin's folder so outputs land in the right place.
         trainer_name = os.path.basename(str(self.settings.get("script_neural_trainer", "pt_trainer.py")))
 
-        # If an alt coin folder doesn't exist yet, create it and copy the trainer script from the main (BTC) folder.
-        # (Also: overwrite to avoid running stale trainer copies in alt folders.)
+        # If coin folder doesn't exist yet, create it and copy the trainer script.
+        # (Also: overwrite to avoid running stale trainer copies in coin folders.)
 
-        if coin != "BTC":
+        if coin not in self.coin_folders:
             try:
                 if not os.path.isdir(coin_cwd):
                     os.makedirs(coin_cwd, exist_ok=True)
 
-                src_main_folder = self.coin_folders.get("BTC", self.project_dir)
-                src_trainer_path = os.path.join(src_main_folder, trainer_name)
+                # Copy trainer from MAIN folder to coin folder
+                src_main_trainer = os.path.join(self.project_dir, trainer_name)
                 dst_trainer_path = os.path.join(coin_cwd, trainer_name)
 
-                if os.path.isfile(src_trainer_path):
-                    shutil.copy2(src_trainer_path, dst_trainer_path)
+                if os.path.isfile(src_main_trainer):
+                    shutil.copy2(src_main_trainer, dst_trainer_path)
             except Exception:
                 pass
 
@@ -3179,7 +3485,7 @@ class PowerTraderHub(tk.Tk):
         env["POWERTRADER_HUB_DIR"] = self.hub_dir
 
         try:
-            # IMPORTANT: pass `coin` so neural_trainer trains the correct market instead of defaulting to BTC
+            # Pass `coin` argument so trainer processes the correct market
             info.proc = subprocess.Popen(
                 [sys.executable, "-u", info.path, coin],
                 cwd=coin_cwd,
@@ -3187,6 +3493,8 @@ class PowerTraderHub(tk.Tk):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
             t = threading.Thread(target=self._reader_thread, args=(info.proc, q, f"[{coin}] "), daemon=True)
@@ -3284,8 +3592,8 @@ class PowerTraderHub(tk.Tk):
         neural_running = bool(self.proc_neural.proc and self.proc_neural.proc.poll() is None)
         trader_running = bool(self.proc_trader.proc and self.proc_trader.proc.poll() is None)
 
-        self.lbl_neural.config(text=f"Neural: {'running' if neural_running else 'stopped'}")
-        self.lbl_trader.config(text=f"Trader: {'running' if trader_running else 'stopped'}")
+        self.lbl_neural.config(text=f"Neural: {'RUNNING' if neural_running else 'STOPPED'}")
+        self.lbl_trader.config(text=f"Trader: {'RUNNING' if trader_running else 'STOPPED'}")
 
         # Start All is now a toggle (Start/Stop)
         try:
@@ -3330,17 +3638,17 @@ class PowerTraderHub(tk.Tk):
                 self._last_training_sig = sig
                 self.training_list.delete(0, "end")
                 for c, st in sig:
-                    self.training_list.insert("end", f"{c}: {st}")
+                    self.training_list.insert("end", f"{c}: {st.upper()}")
 
             # show gating hint (Start All handles the runner->ready->trader sequence)
             if not all_trained:
-                self.lbl_flow_hint.config(text="Flow: Train All required → then Start All")
+                self.lbl_flow_hint.config(text="Flow: TRAIN ALL REQUIRED → THEN START ALL")
             elif self._auto_start_trader_pending:
-                self.lbl_flow_hint.config(text="Flow: Starting runner → waiting for ready → trader will auto-start")
+                self.lbl_flow_hint.config(text="Flow: STARTING RUNNER → WAITING FOR READY → TRADER WILL AUTO-START")
             elif neural_running or trader_running:
-                self.lbl_flow_hint.config(text="Flow: Running (use the button to stop)")
+                self.lbl_flow_hint.config(text="Flow: RUNNING (use the button to stop)")
             else:
-                self.lbl_flow_hint.config(text="Flow: Start All")
+                self.lbl_flow_hint.config(text="Flow: START ALL")
         except Exception:
             pass
 
@@ -3502,34 +3810,39 @@ class PowerTraderHub(tk.Tk):
 
             # -------------------------
             # DCA affordability
-            # - Entry allocation mirrors pt_trader.py: total_val * (0.00005 / N) with min $0.50
-            # - Each DCA buy mirrors pt_trader.py: dca_amount = value * 2  (=> total scales ~3x per DCA)
+            # Uses actual trading settings to calculate how many DCA levels you can afford
             # -------------------------
             coins = getattr(self, "coins", None) or []
             n = len(coins) if len(coins) > 0 else 1
+            
+            # Load trading config
+            trading_cfg = _load_trading_config()
+            alloc_pct = trading_cfg.get("position_sizing", {}).get("initial_allocation_pct", 0.005)
+            min_alloc = trading_cfg.get("position_sizing", {}).get("min_allocation_usd", 0.5)
+            multiplier = trading_cfg.get("dca", {}).get("position_multiplier", 2.0)
 
             spread_levels = 0
             single_levels = 0
 
             if total_val > 0.0:
                 # Spread across all coins
-                alloc_spread = total_val * (0.00005 / n)
-                if alloc_spread < 0.5:
-                    alloc_spread = 0.5
+                alloc_spread = total_val * (alloc_pct / n)
+                if alloc_spread < min_alloc:
+                    alloc_spread = min_alloc
 
                 required = alloc_spread * n  # initial buys for all coins
-                while required > 0.0 and (required * 3.0) <= (total_val + 1e-9):
-                    required *= 3.0
+                while required > 0.0 and (required * (1.0 + multiplier)) <= (total_val + 1e-9):
+                    required *= (1.0 + multiplier)
                     spread_levels += 1
 
                 # All DCA into a single coin
-                alloc_single = total_val * 0.00005
-                if alloc_single < 0.5:
-                    alloc_single = 0.5
+                alloc_single = total_val * alloc_pct
+                if alloc_single < min_alloc:
+                    alloc_single = min_alloc
 
                 required = alloc_single  # initial buy for one coin
-                while required > 0.0 and (required * 3.0) <= (total_val + 1e-9):
-                    required *= 3.0
+                while required > 0.0 and (required * (1.0 + multiplier)) <= (total_val + 1e-9):
+                    required *= (1.0 + multiplier)
                     single_levels += 1
 
             # Show labels + number (one line each)
@@ -3958,6 +4271,12 @@ class PowerTraderHub(tk.Tk):
                         mt_candidates.append(float(mt))
 
             tile.set_values(long_sig, short_sig)
+            
+            # Update marker lines if config changed
+            try:
+                tile.update_marker_lines()
+            except Exception:
+                pass
 
             if mt_candidates:
                 mx = max(mt_candidates)
@@ -4169,13 +4488,13 @@ class PowerTraderHub(tk.Tk):
         frm.columnconfigure(1, weight=1)  # entries
         frm.columnconfigure(2, weight=0)  # browse buttons
 
-        def add_row(r: int, label: str, var: tk.Variable, browse: Optional[str] = None):
+        def add_row(parent, r: int, label: str, var: tk.Variable, browse: Optional[str] = None):
             """
             browse: "dir" to attach a directory chooser, else None.
             """
-            ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", padx=(0, 10), pady=6)
+            ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w", padx=(0, 10), pady=6)
 
-            ent = ttk.Entry(frm, textvariable=var)
+            ent = ttk.Entry(parent, textvariable=var)
             ent.grid(row=r, column=1, sticky="ew", pady=6)
 
             if browse == "dir":
@@ -4183,10 +4502,10 @@ class PowerTraderHub(tk.Tk):
                     picked = filedialog.askdirectory()
                     if picked:
                         var.set(picked)
-                ttk.Button(frm, text="Browse", command=do_browse).grid(row=r, column=2, sticky="e", padx=(10, 0), pady=6)
+                ttk.Button(parent, text="Browse", command=do_browse).grid(row=r, column=2, sticky="e", padx=(10, 0), pady=6)
             else:
                 # keep column alignment consistent
-                ttk.Label(frm, text="").grid(row=r, column=2, sticky="e", padx=(10, 0), pady=6)
+                ttk.Label(parent, text="").grid(row=r, column=2, sticky="e", padx=(10, 0), pady=6)
 
         main_dir_var = tk.StringVar(value=self.settings["main_neural_dir"])
         coins_var = tk.StringVar(value=",".join(self.settings["coins"]))
@@ -4199,18 +4518,32 @@ class PowerTraderHub(tk.Tk):
         ui_refresh_var = tk.StringVar(value=str(self.settings["ui_refresh_seconds"]))
         chart_refresh_var = tk.StringVar(value=str(self.settings["chart_refresh_seconds"]))
         candles_limit_var = tk.StringVar(value=str(self.settings["candles_limit"]))
-        auto_start_var = tk.BooleanVar(value=bool(self.settings.get("auto_start_scripts", False)))
 
         r = 0
-        add_row(r, "Main neural folder:", main_dir_var, browse="dir"); r += 1
-        add_row(r, "Coins (comma):", coins_var); r += 1
-        add_row(r, "Hub data dir (optional):", hub_dir_var, browse="dir"); r += 1
+        
+        # Basic Settings Section
+        basic_frame = ttk.LabelFrame(frm, text=" Basic Settings ", padding=15)
+        basic_frame.grid(row=r, column=0, columnspan=3, sticky="ew", pady=(0, 15)); r += 1
+        basic_frame.columnconfigure(0, weight=0)
+        basic_frame.columnconfigure(1, weight=1)
+        basic_frame.columnconfigure(2, weight=0)
+        
+        basic_r = 0
+        add_row(basic_frame, basic_r, "Main neural folder:", main_dir_var, browse="dir"); basic_r += 1
+        add_row(basic_frame, basic_r, "Coins (comma):", coins_var); basic_r += 1
+        add_row(basic_frame, basic_r, "Hub data dir (optional):", hub_dir_var, browse="dir"); basic_r += 1
 
-        ttk.Separator(frm, orient="horizontal").grid(row=r, column=0, columnspan=3, sticky="ew", pady=10); r += 1
-
-        add_row(r, "pt_thinker.py path:", neural_script_var); r += 1
-        add_row(r, "pt_trainer.py path:", trainer_script_var); r += 1
-        add_row(r, "pt_trader.py path:", trader_script_var); r += 1
+        # Script Paths Section
+        script_frame = ttk.LabelFrame(frm, text=" Script Paths ", padding=15)
+        script_frame.grid(row=r, column=0, columnspan=3, sticky="ew", pady=(0, 15)); r += 1
+        script_frame.columnconfigure(0, weight=0)
+        script_frame.columnconfigure(1, weight=1)
+        script_frame.columnconfigure(2, weight=0)
+        
+        script_r = 0
+        add_row(script_frame, script_r, "pt_thinker.py path:", neural_script_var); script_r += 1
+        add_row(script_frame, script_r, "pt_trainer.py path:", trainer_script_var); script_r += 1
+        add_row(script_frame, script_r, "pt_trader.py path:", trader_script_var); script_r += 1
 
         # --- Robinhood API setup (writes r_key.txt + r_secret.txt used by pt_trader.py) ---
         def _api_paths() -> Tuple[str, str]:
@@ -4454,7 +4787,7 @@ class PowerTraderHub(tk.Tk):
                 "  C) Click Crypto.\n"
                 "  D) Scroll down to API Trading and click + Add Key (or Add key).\n"
                 "  E) Paste the Public Key into the Public key field.\n"
-                "  F) Give it any name (example: PowerTrader).\n"
+                "  F) Give it any name (example: PowerTraderAI).\n"
                 "  G) Permissions: this TRADER needs READ + TRADE. (READ-only cannot place orders.)\n"
                 "  H) Click Save. Robinhood shows your API Key — copy it right away (it may only show once).\n\n"
                 "📱 Mobile note: if you can't find API Trading in the app, use robinhood.com in a browser.\n\n"
@@ -4785,10 +5118,13 @@ class PowerTraderHub(tk.Tk):
             ttk.Button(save_btns, text="Save", command=do_save).pack(side="left")
             ttk.Button(save_btns, text="Close", command=wiz.destroy).pack(side="left", padx=8)
 
-        ttk.Label(frm, text="Robinhood API:").grid(row=r, column=0, sticky="w", padx=(0, 10), pady=6)
+        # Robinhood API Section
+        api_frame = ttk.LabelFrame(frm, text=" Robinhood API ", padding=15)
+        api_frame.grid(row=r, column=0, columnspan=3, sticky="ew", pady=(0, 15)); r += 1
+        api_frame.columnconfigure(0, weight=1)
 
-        api_row = ttk.Frame(frm)
-        api_row.grid(row=r, column=1, columnspan=2, sticky="ew", pady=6)
+        api_row = ttk.Frame(api_frame)
+        api_row.pack(fill="x")
         api_row.columnconfigure(0, weight=1)
 
         ttk.Label(api_row, textvariable=api_status_var).grid(row=0, column=0, sticky="w")
@@ -4796,18 +5132,29 @@ class PowerTraderHub(tk.Tk):
         ttk.Button(api_row, text="Open Folder", command=_open_api_folder).grid(row=0, column=2, sticky="e", padx=(8, 0))
         ttk.Button(api_row, text="Clear", command=_clear_api_files).grid(row=0, column=3, sticky="e", padx=(8, 0))
 
-        r += 1
-
         _refresh_api_status()
 
-        ttk.Separator(frm, orient="horizontal").grid(row=r, column=0, columnspan=3, sticky="ew", pady=10); r += 1
-
-        add_row(r, "UI refresh seconds:", ui_refresh_var); r += 1
-        add_row(r, "Chart refresh seconds:", chart_refresh_var); r += 1
-        add_row(r, "Candles limit:", candles_limit_var); r += 1
-
-        chk = ttk.Checkbutton(frm, text="Auto start scripts on GUI launch", variable=auto_start_var)
-        chk.grid(row=r, column=0, columnspan=3, sticky="w", pady=(10, 0)); r += 1
+        # Display Settings Section
+        display_frame = ttk.LabelFrame(frm, text=" Display Settings ", padding=15)
+        display_frame.grid(row=r, column=0, columnspan=3, sticky="ew", pady=(0, 15)); r += 1
+        display_frame.columnconfigure(0, weight=0)
+        display_frame.columnconfigure(1, weight=1)
+        display_frame.columnconfigure(2, weight=0)
+        
+        display_r = 0
+        add_row(display_frame, display_r, "UI refresh seconds:", ui_refresh_var); display_r += 1
+        add_row(display_frame, display_r, "Chart refresh seconds:", chart_refresh_var); display_r += 1
+        add_row(display_frame, display_r, "Candles limit:", candles_limit_var); display_r += 1
+        
+        # Custom theme checkbox
+        use_custom_theme_var = tk.BooleanVar(value=self.settings.get("use_custom_theme", False))
+        ttk.Label(display_frame, text="").grid(row=display_r, column=0, sticky="w"); display_r += 1  # spacing
+        theme_check = ttk.Checkbutton(
+            display_frame,
+            text="Use custom theme (requires restart)",
+            variable=use_custom_theme_var
+        )
+        theme_check.grid(row=display_r, column=0, columnspan=2, sticky="w", pady=6); display_r += 1
 
         btns = ttk.Frame(frm)
         btns.grid(row=r, column=0, columnspan=3, sticky="ew", pady=14)
@@ -4828,11 +5175,26 @@ class PowerTraderHub(tk.Tk):
                 self.settings["ui_refresh_seconds"] = float(ui_refresh_var.get().strip())
                 self.settings["chart_refresh_seconds"] = float(chart_refresh_var.get().strip())
                 self.settings["candles_limit"] = int(float(candles_limit_var.get().strip()))
-                self.settings["auto_start_scripts"] = bool(auto_start_var.get())
+                
+                # Handle custom theme checkbox
+                prev_use_theme = self.settings.get("use_custom_theme", False)
+                new_use_theme = use_custom_theme_var.get()
+                self.settings["use_custom_theme"] = new_use_theme
+                
+                # If checkbox was just enabled and theme file doesn't exist, create it with defaults
+                if new_use_theme and not prev_use_theme:
+                    theme_path = os.path.join(self.project_dir, THEME_SETTINGS_FILE)
+                    if not os.path.isfile(theme_path):
+                        try:
+                            with open(theme_path, "w", encoding="utf-8") as f:
+                                json.dump(DEFAULT_THEME, f, indent=4)
+                        except Exception as e:
+                            messagebox.showwarning("Theme file creation failed", f"Couldn't create {THEME_SETTINGS_FILE}:\n{e}")
+                
                 self._save_settings()
 
                 # If new coin(s) were added and their training folder doesn't exist yet,
-                # create the folder and copy neural_trainer.py into it RIGHT AFTER saving settings.
+                # create the folder and copy neural_trainer.py from MAIN folder into it RIGHT AFTER saving settings.
                 try:
                     new_coins = [c.strip().upper() for c in (self.settings.get("coins") or []) if c.strip()]
                     added = [c for c in new_coins if c and c not in prev_coins]
@@ -4840,16 +5202,11 @@ class PowerTraderHub(tk.Tk):
                     main_dir = self.settings.get("main_neural_dir") or self.project_dir
                     trainer_name = os.path.basename(str(self.settings.get("script_neural_trainer", "neural_trainer.py")))
 
-                    # Best-effort resolve source trainer path:
-                    # Prefer trainer living in the main (BTC) folder; fallback to the configured trainer path.
+                    # Source trainer: MAIN folder (preferred location)
                     src_main_trainer = os.path.join(main_dir, trainer_name)
-                    src_cfg_trainer = str(self.settings.get("script_neural_trainer", trainer_name))
-                    src_trainer_path = src_main_trainer if os.path.isfile(src_main_trainer) else src_cfg_trainer
+                    src_trainer_path = src_main_trainer if os.path.isfile(src_main_trainer) else str(self.settings.get("script_neural_trainer", trainer_name))
 
                     for coin in added:
-                        if coin == "BTC":
-                            continue  # BTC uses main folder; no per-coin folder needed
-
                         coin_dir = os.path.join(main_dir, coin)
                         if not os.path.isdir(coin_dir):
                             os.makedirs(coin_dir, exist_ok=True)
@@ -4863,7 +5220,14 @@ class PowerTraderHub(tk.Tk):
                 # Refresh all coin-driven UI (dropdowns + chart tabs)
                 self._refresh_coin_dependent_ui(prev_coins)
 
-                messagebox.showinfo("Saved", "Settings saved.")
+                # Notify user about restart if theme changed
+                if new_use_theme != prev_use_theme:
+                    messagebox.showinfo(
+                        "Saved", 
+                        "Settings saved.\n\nTheme setting changed — restart PowerTraderAI for full effect."
+                    )
+                else:
+                    messagebox.showinfo("Saved", "Settings saved.")
                 win.destroy()
 
             except Exception as e:
@@ -4871,6 +5235,439 @@ class PowerTraderHub(tk.Tk):
 
         ttk.Button(btns, text="Save", command=save).pack(side="left")
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=8)
+
+    # ---- config file editors ----
+
+    def open_trading_settings_dialog(self) -> None:
+        """Open GUI dialog for editing trading_settings.json."""
+        config_path = os.path.join(self.project_dir, TRADING_SETTINGS_FILE)
+        
+        # Load current config
+        cfg = _load_trading_config()
+
+        win = tk.Toplevel(self)
+        win.title("Trading Settings")
+        win.geometry("860x680")
+        win.minsize(760, 560)
+        win.configure(bg=DARK_BG)
+
+        # Scrollable content
+        viewport = ttk.Frame(win)
+        viewport.pack(fill="both", expand=True, padx=12, pady=12)
+        viewport.grid_rowconfigure(0, weight=1)
+        viewport.grid_columnconfigure(0, weight=1)
+
+        settings_canvas = tk.Canvas(
+            viewport,
+            bg=DARK_BG,
+            highlightthickness=1,
+            highlightbackground=DARK_BORDER,
+            bd=0,
+        )
+        settings_canvas.grid(row=0, column=0, sticky="nsew")
+
+        settings_scroll = ttk.Scrollbar(
+            viewport,
+            orient="vertical",
+            command=settings_canvas.yview,
+        )
+        settings_scroll.grid(row=0, column=1, sticky="ns")
+        settings_canvas.configure(yscrollcommand=settings_scroll.set)
+
+        frm = ttk.Frame(settings_canvas, padding=(0, 0, 13, 0))
+        settings_window = settings_canvas.create_window((0, 0), window=frm, anchor="nw")
+
+        def _update_scrollbars(event=None) -> None:
+            try:
+                c = settings_canvas
+                win_id = settings_window
+
+                c.update_idletasks()
+                bbox = c.bbox(win_id)
+                if not bbox:
+                    settings_scroll.grid_remove()
+                    return
+
+                c.configure(scrollregion=bbox)
+                content_h = int(bbox[3] - bbox[1])
+                view_h = int(c.winfo_height())
+
+                if content_h > (view_h + 1):
+                    settings_scroll.grid()
+                else:
+                    settings_scroll.grid_remove()
+                    try:
+                        c.yview_moveto(0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        def _on_canvas_configure(e) -> None:
+            try:
+                settings_canvas.itemconfigure(settings_window, width=int(e.width))
+            except Exception:
+                pass
+            _update_scrollbars()
+
+        settings_canvas.bind("<Configure>", _on_canvas_configure, add="+")
+        frm.bind("<Configure>", _update_scrollbars, add="+")
+
+        def _wheel(e):
+            try:
+                if settings_scroll.winfo_ismapped():
+                    settings_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            except Exception:
+                pass
+
+        settings_canvas.bind("<Enter>", lambda _e: settings_canvas.focus_set(), add="+")
+        settings_canvas.bind("<MouseWheel>", _wheel, add="+")
+        settings_canvas.bind("<Button-4>", lambda _e: settings_canvas.yview_scroll(-3, "units"), add="+")
+        settings_canvas.bind("<Button-5>", lambda _e: settings_canvas.yview_scroll(3, "units"), add="+")
+
+        frm.columnconfigure(0, weight=0)  # labels
+        frm.columnconfigure(1, weight=1)  # entries
+
+        def add_row(parent, r: int, label: str, var: tk.Variable):
+            ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w", padx=(0, 10), pady=6)
+            ent = ttk.Entry(parent, textvariable=var)
+            ent.grid(row=r, column=1, sticky="ew", pady=6)
+
+        r = 0
+
+        # DCA Section
+        dca_frame = ttk.LabelFrame(frm, text=" DCA (Dollar Cost Averaging) ", padding=15)
+        dca_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        dca_frame.columnconfigure(0, weight=0)
+        dca_frame.columnconfigure(1, weight=1)
+        
+        dca_levels = cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0])
+        dca_level_vars = []
+        dca_r = 0
+        for i, level in enumerate(dca_levels):
+            var = tk.StringVar(value=str(level))
+            dca_level_vars.append(var)
+            add_row(dca_frame, dca_r, f"DCA Level {i+1} (%):", var)
+            dca_r += 1
+
+        max_buys_var = tk.StringVar(value=str(cfg.get("dca", {}).get("max_buys_per_window", 2)))
+        add_row(dca_frame, dca_r, "Max DCA buys per window (count):", max_buys_var); dca_r += 1
+
+        window_hours_var = tk.StringVar(value=str(cfg.get("dca", {}).get("window_hours", 24)))
+        add_row(dca_frame, dca_r, "Window (hours):", window_hours_var); dca_r += 1
+
+        multiplier_var = tk.StringVar(value=str(cfg.get("dca", {}).get("position_multiplier", 2.0)))
+        add_row(dca_frame, dca_r, "Position multiplier (x):", multiplier_var); dca_r += 1
+
+        # Profit Margin Section
+        profit_frame = ttk.LabelFrame(frm, text=" Profit Margin ", padding=15)
+        profit_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        profit_frame.columnconfigure(0, weight=0)
+        profit_frame.columnconfigure(1, weight=1)
+        
+        profit_r = 0
+        trailing_gap_var = tk.StringVar(value=str(cfg.get("profit_margin", {}).get("trailing_gap_pct", 0.5)))
+        add_row(profit_frame, profit_r, "Trailing gap (%):", trailing_gap_var); profit_r += 1
+
+        target_no_dca_var = tk.StringVar(value=str(cfg.get("profit_margin", {}).get("target_no_dca_pct", 5.0)))
+        add_row(profit_frame, profit_r, "Target without DCA (%):", target_no_dca_var); profit_r += 1
+
+        target_with_dca_var = tk.StringVar(value=str(cfg.get("profit_margin", {}).get("target_with_dca_pct", 2.5)))
+        add_row(profit_frame, profit_r, "Target with DCA (%):", target_with_dca_var); profit_r += 1
+
+        # Entry Signals Section
+        entry_frame = ttk.LabelFrame(frm, text=" Entry Signals ", padding=15)
+        entry_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        entry_frame.columnconfigure(0, weight=0)
+        entry_frame.columnconfigure(1, weight=1)
+        
+        entry_r = 0
+        long_min_var = tk.StringVar(value=str(cfg.get("entry_signals", {}).get("long_signal_min", 3)))
+        add_row(entry_frame, entry_r, "Long signal minimum (1-7):", long_min_var); entry_r += 1
+
+        short_max_var = tk.StringVar(value=str(cfg.get("entry_signals", {}).get("short_signal_max", 0)))
+        add_row(entry_frame, entry_r, "Short signal maximum (0-7):", short_max_var); entry_r += 1
+
+        # Position Sizing Section
+        position_frame = ttk.LabelFrame(frm, text=" Position Sizing ", padding=15)
+        position_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        position_frame.columnconfigure(0, weight=0)
+        position_frame.columnconfigure(1, weight=1)
+        
+        position_r = 0
+        allocation_var = tk.StringVar(value=str(cfg.get("position_sizing", {}).get("initial_allocation_pct", 0.005)))
+        add_row(position_frame, position_r, "Initial allocation (%):", allocation_var); position_r += 1
+
+        min_alloc_var = tk.StringVar(value=str(cfg.get("position_sizing", {}).get("min_allocation_usd", 0.5)))
+        add_row(position_frame, position_r, "Minimum allocation ($):", min_alloc_var); position_r += 1
+
+        # Timing Section
+        timing_frame = ttk.LabelFrame(frm, text=" Timing ", padding=15)
+        timing_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        timing_frame.columnconfigure(0, weight=0)
+        timing_frame.columnconfigure(1, weight=1)
+        
+        timing_r = 0
+        loop_delay_var = tk.StringVar(value=str(cfg.get("timing", {}).get("main_loop_delay_seconds", 0.5)))
+        add_row(timing_frame, timing_r, "Main loop delay (seconds):", loop_delay_var); timing_r += 1
+
+        post_trade_var = tk.StringVar(value=str(cfg.get("timing", {}).get("post_trade_delay_seconds", 5)))
+        add_row(timing_frame, timing_r, "Post-trade delay (seconds):", post_trade_var); timing_r += 1
+
+        # Buttons
+        btns = ttk.Frame(frm)
+        btns.grid(row=r, column=0, columnspan=2, sticky="ew", pady=14)
+        btns.columnconfigure(0, weight=1)
+
+        def save():
+            try:
+                # Parse and validate all fields
+                dca_lvls = [float(v.get()) for v in dca_level_vars]
+                max_buys = int(max_buys_var.get())
+                window_hrs = int(window_hours_var.get())
+                multiplier = float(multiplier_var.get())
+                
+                trailing_gap = float(trailing_gap_var.get())
+                target_no_dca = float(target_no_dca_var.get())
+                target_with_dca = float(target_with_dca_var.get())
+                
+                long_min = int(long_min_var.get())
+                short_max = int(short_max_var.get())
+                
+                alloc_pct = float(allocation_var.get())
+                min_alloc = float(min_alloc_var.get())
+                
+                loop_delay = float(loop_delay_var.get())
+                post_trade = float(post_trade_var.get())
+
+                # Validation
+                # DCA levels must be negative and in descending order (more negative)
+                for i, lvl in enumerate(dca_lvls):
+                    if lvl >= 0:
+                        messagebox.showerror("Validation Error", f"DCA Level {i+1} must be negative (e.g., -2.5)")
+                        return
+                    if i > 0 and lvl >= dca_lvls[i-1]:
+                        messagebox.showerror("Validation Error", f"DCA Level {i+1} ({lvl}%) must be more negative than Level {i} ({dca_lvls[i-1]}%)")
+                        return
+
+                if max_buys < 1:
+                    messagebox.showerror("Validation Error", "Max DCA buys per window must be at least 1")
+                    return
+                
+                if window_hrs < 1:
+                    messagebox.showerror("Validation Error", "Window hours must be at least 1")
+                    return
+
+                if multiplier <= 0:
+                    messagebox.showerror("Validation Error", "Position multiplier must be greater than 0")
+                    return
+
+                # Percentages must be 0-100
+                if not (0 < trailing_gap <= 100):
+                    messagebox.showerror("Validation Error", "Trailing gap must be between 0 and 100%")
+                    return
+                if not (0 < target_no_dca <= 100):
+                    messagebox.showerror("Validation Error", "Target without DCA must be between 0 and 100%")
+                    return
+                if not (0 < target_with_dca <= 100):
+                    messagebox.showerror("Validation Error", "Target with DCA must be between 0 and 100%")
+                    return
+
+                # Entry signals
+                if not (1 <= long_min <= 7):
+                    messagebox.showerror("Validation Error", "Long signal minimum must be between 1 and 7")
+                    return
+                if not (0 <= short_max <= 7):
+                    messagebox.showerror("Validation Error", "Short signal maximum must be between 0 and 7")
+                    return
+
+                # Position sizing
+                if not (0 < alloc_pct <= 100):
+                    messagebox.showerror("Validation Error", "Initial allocation % must be between 0 and 100")
+                    return
+                if min_alloc < 0:
+                    messagebox.showerror("Validation Error", "Minimum allocation must be non-negative")
+                    return
+
+                # Timing
+                if loop_delay <= 0:
+                    messagebox.showerror("Validation Error", "Main loop delay must be greater than 0 seconds")
+                    return
+                if post_trade < 0:
+                    messagebox.showerror("Validation Error", "Post-trade delay must be non-negative")
+                    return
+
+                # Build config from all fields
+                new_cfg = {
+                    "dca": {
+                        "levels": dca_lvls,
+                        "max_buys_per_window": max_buys,
+                        "window_hours": window_hrs,
+                        "position_multiplier": multiplier
+                    },
+                    "profit_margin": {
+                        "trailing_gap_pct": trailing_gap,
+                        "target_no_dca_pct": target_no_dca,
+                        "target_with_dca_pct": target_with_dca
+                    },
+                    "entry_signals": {
+                        "long_signal_min": long_min,
+                        "short_signal_max": short_max
+                    },
+                    "position_sizing": {
+                        "initial_allocation_pct": alloc_pct,
+                        "min_allocation_usd": min_alloc
+                    },
+                    "timing": {
+                        "main_loop_delay_seconds": loop_delay,
+                        "post_trade_delay_seconds": post_trade
+                    }
+                }
+
+                _safe_write_json(config_path, new_cfg)
+                messagebox.showinfo("Saved", "Trading settings saved.")
+                win.destroy()
+
+            except ValueError as e:
+                messagebox.showerror("Invalid Input", f"Please enter valid numbers in all fields.\n\n{e}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save settings:\n{e}")
+
+        ttk.Button(btns, text="Apply", command=save).pack(side="left")
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=8)
+
+    def open_training_settings_dialog(self) -> None:
+        """Open GUI dialog for editing training_settings.json."""
+        config_path = os.path.join(self.project_dir, TRAINING_SETTINGS_FILE)
+        
+        # Load current config
+        cfg = _load_training_config()
+
+        win = tk.Toplevel(self)
+        win.title("Training Settings")
+        win.geometry("550x300")
+        win.minsize(450, 280)
+        win.configure(bg=DARK_BG)
+
+        # Main container with padding
+        container = ttk.Frame(win)
+        container.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Settings box with border
+        settings_frame = ttk.LabelFrame(container, text=" Training Settings ", padding=15)
+        settings_frame.pack(fill="both", expand=True, pady=(0, 15))
+        
+        settings_frame.columnconfigure(0, weight=0)
+        settings_frame.columnconfigure(1, weight=1)
+
+        # Staleness threshold
+        ttk.Label(settings_frame, text="Staleness threshold (days):").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
+        staleness_var = tk.StringVar(value=str(cfg.get("staleness_days", 14)))
+        ent = ttk.Entry(settings_frame, textvariable=staleness_var)
+        ent.grid(row=0, column=1, sticky="ew", pady=6)
+
+        ttk.Label(
+            settings_frame,
+            text="Number of days before AI training is considered stale and should be retrained.",
+            foreground=DARK_FG,
+            wraplength=450
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 15))
+
+        # Auto-train checkbox
+        auto_train_var = tk.BooleanVar(value=bool(cfg.get("auto_train_when_stale", False)))
+        chk = ttk.Checkbutton(settings_frame, text="Automatically retrain when stale", variable=auto_train_var)
+        chk.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 0))
+
+        # Buttons at bottom
+        btns = ttk.Frame(container)
+        btns.pack(side="bottom", fill="x")
+        btns.columnconfigure(0, weight=1)
+
+        def save():
+            try:
+                staleness = int(staleness_var.get())
+                
+                # Validation
+                if staleness < 1:
+                    messagebox.showerror("Validation Error", "Staleness threshold must be at least 1 day")
+                    return
+                
+                new_cfg = {
+                    "staleness_days": staleness,
+                    "auto_train_when_stale": bool(auto_train_var.get())
+                }
+
+                _safe_write_json(config_path, new_cfg)
+                messagebox.showinfo("Saved", "Training settings saved.")
+                win.destroy()
+
+            except ValueError as e:
+                messagebox.showerror("Invalid Input", f"Please enter a valid number for staleness days.\n\n{e}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save settings:\n{e}")
+
+        ttk.Button(btns, text="Apply", command=save).pack(side="left")
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=8)
+
+    def _open_trading_config(self) -> None:
+        """Open trading_settings.json in default text editor. Creates with defaults if missing."""
+        config_path = os.path.join(self.project_dir, TRADING_SETTINGS_FILE)
+        
+        # Create file with defaults if it doesn't exist
+        if not os.path.isfile(config_path):
+            try:
+                _safe_write_json(config_path, DEFAULT_TRADING_CONFIG)
+            except Exception as e:
+                messagebox.showerror(
+                    "Error Creating Settings",
+                    f"Could not create {TRADING_SETTINGS_FILE}:\n\n{e}"
+                )
+                return
+        
+        # Open in default text editor
+        try:
+            if sys.platform == "win32":
+                os.startfile(config_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", config_path])
+            else:
+                subprocess.Popen(["xdg-open", config_path])
+        except Exception as e:
+            messagebox.showerror(
+                "Error Opening File",
+                f"Could not open {TRADING_SETTINGS_FILE} in text editor:\n\n{e}\n\n"
+                f"File location: {config_path}"
+            )
+
+    def _open_training_config(self) -> None:
+        """Open training_settings.json in default text editor. Creates with defaults if missing."""
+        config_path = os.path.join(self.project_dir, TRAINING_SETTINGS_FILE)
+        
+        # Create file with defaults if it doesn't exist
+        if not os.path.isfile(config_path):
+            try:
+                _safe_write_json(config_path, DEFAULT_TRAINING_CONFIG)
+            except Exception as e:
+                messagebox.showerror(
+                    "Error Creating Settings",
+                    f"Could not create {TRAINING_SETTINGS_FILE}:\n\n{e}"
+                )
+                return
+        
+        # Open in default text editor
+        try:
+            if sys.platform == "win32":
+                os.startfile(config_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", config_path])
+            else:
+                subprocess.Popen(["xdg-open", config_path])
+        except Exception as e:
+            messagebox.showerror(
+                "Error Opening File",
+                f"Could not open {TRAINING_SETTINGS_FILE} in text editor:\n\n{e}\n\n"
+                f"File location: {config_path}"
+            )
 
     # ---- close ----
 

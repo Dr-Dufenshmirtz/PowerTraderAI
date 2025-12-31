@@ -11,6 +11,7 @@ preserve the original runtime behavior.
 
 Repository: https://github.com/garagesteve1155/PowerTrader_AI
 Author: Stephen Hughes (garagesteve1155)
+Contributors: Dr-Dufenshmirtz
 
 Notes on AI behavior and trading rules (informational only):
 
@@ -251,8 +252,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def coin_folder(sym: str) -> str:
 	sym = sym.upper()
-	# Your "main folder is BTC folder" convention:
-	return BASE_DIR if sym == 'BTC' else os.path.join(BASE_DIR, sym)
+	# All coins use their own subfolder
+	return os.path.join(BASE_DIR, sym)
 
 # --- training freshness gate (mirrors pt_hub.py) ---
 _TRAINING_STALE_SECONDS = 14 * 24 * 60 * 60  # 14 days

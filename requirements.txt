@@ -5,4 +5,5 @@ colorama
 cryptography
 PyNaCl
 kucoin-python
+robin-stocks
 setuptools
