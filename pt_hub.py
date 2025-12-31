@@ -278,8 +278,8 @@ class NeuralSignalTile(ttk.Frame):
         self._pad = 6
 
         self._base_fill = DARK_PANEL
-        self._long_fill = "blue"
-        self._short_fill = "orange"
+        self._long_fill = CHART_NEURAL_LONG
+        self._short_fill = CHART_NEURAL_SHORT
 
         self.title_lbl = ttk.Label(self, text=coin)
         self.title_lbl.pack(anchor="center")
@@ -658,8 +658,6 @@ def _fmt_price(x: Any) -> str:
             dec = 8
 
         s = f"{av:,.{dec}f}"
-        if "." in s:
-            s = s.rstrip("0").rstrip(".")
 
         return f"{sign}${s}"
     except Exception:
@@ -1004,7 +1002,7 @@ class CandleChart(ttk.Frame):
             self.ax.tick_params(colors=DARK_FG, labelsize=CHART_LABEL_FONT_SIZE)
             for spine in self.ax.spines.values():
                 spine.set_color(DARK_BORDER)
-            self.ax.grid(True, color=DARK_BORDER, linewidth=0.6, alpha=0.35)
+            self.ax.grid(True, color=DARK_BORDER, linewidth=0.6, alpha=1.0)
         except Exception:
             pass
 
@@ -1193,7 +1191,7 @@ class CandleChart(ttk.Frame):
                     bbox=dict(
                         facecolor=DARK_BG2,
                         edgecolor=color,
-                        boxstyle="round,pad=0.18",
+                        boxstyle="square,pad=0.3",
                         alpha=1.0,
                     ),
                     zorder=20,
@@ -1433,7 +1431,7 @@ class AccountValueChart(ttk.Frame):
             self.ax.tick_params(colors=DARK_FG, labelsize=CHART_LABEL_FONT_SIZE)
             for spine in self.ax.spines.values():
                 spine.set_color(DARK_BORDER)
-            self.ax.grid(True, color=DARK_BORDER, linewidth=0.6, alpha=0.35)
+            self.ax.grid(True, color=DARK_BORDER, linewidth=0.6, alpha=1.0)
         except Exception:
             pass
 
@@ -3565,6 +3563,15 @@ class PowerTraderHub(tk.Tk):
 
     # ---- refresh loop ----
     def _drain_queue_to_text(self, q: "queue.Queue[str]", txt: tk.Text, max_lines: int = 2500) -> None:
+        # Check if user is already at bottom before adding new text
+        was_at_bottom = False
+        try:
+            # Get the current view position
+            yview = txt.yview()
+            # If the bottom of the view is at or very near the end, consider it "at bottom"
+            was_at_bottom = (yview[1] >= 0.98)
+        except Exception:
+            was_at_bottom = True  # Default to auto-scroll if we can't determine
 
         try:
             changed = False
@@ -3585,7 +3592,15 @@ class PowerTraderHub(tk.Tk):
                     txt.delete("1.0", f"{current - max_lines}.0")
             except Exception:
                 pass
-            txt.see("end")
+            
+            # Only auto-scroll if user was already at the bottom
+            if was_at_bottom:
+                try:
+                    # Smoother scroll: use yview_moveto instead of see()
+                    txt.update_idletasks()
+                    txt.yview_moveto(1.0)
+                except Exception:
+                    txt.see("end")
 
     def _tick(self) -> None:
         # process labels
@@ -3644,7 +3659,7 @@ class PowerTraderHub(tk.Tk):
             if not all_trained:
                 self.lbl_flow_hint.config(text="Flow: TRAIN ALL REQUIRED → THEN START ALL")
             elif self._auto_start_trader_pending:
-                self.lbl_flow_hint.config(text="Flow: STARTING RUNNER → WAITING FOR READY → TRADER WILL AUTO-START")
+                self.lbl_flow_hint.config(text="FLOW: RUNNER STARTING → TRADER PENDING")
             elif neural_running or trader_running:
                 self.lbl_flow_hint.config(text="Flow: RUNNING (use the button to stop)")
             else:
