@@ -523,6 +523,96 @@ class CryptoAPITrading:
         except Exception:
             return 0
 
+    @staticmethod
+    def _read_long_price_levels(symbol: str) -> list:
+        """
+        Reads low_bound_prices.html from the per-coin folder and returns a list of LONG (blue) price levels.
+        Returned ordering is highest->lowest so:
+          N1 = 1st blue line (top)
+          ...
+          N7 = 7th blue line (bottom)
+        """
+        sym = str(symbol).upper().strip()
+        folder = base_paths.get(sym, main_dir if sym == "BTC" else os.path.join(main_dir, sym))
+        path = os.path.join(folder, "low_bound_prices.html")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = (f.read() or "").strip()
+            if not raw:
+                return []
+
+            # Normalize common formats: python-list, comma-separated, newline-separated
+            raw = raw.strip().strip("[]()")
+            raw = raw.replace(",", " ").replace(";", " ").replace("|", " ")
+            raw = raw.replace("\n", " ").replace("\t", " ")
+            parts = [p for p in raw.split() if p]
+
+            vals = []
+            for p in parts:
+                try:
+                    vals.append(float(p))
+                except Exception:
+                    continue
+
+            # De-dupe, then sort high->low for stable N1..N7 mapping
+            out = []
+            seen = set()
+            for v in vals:
+                k = round(float(v), 12)
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append(float(v))
+            out.sort(reverse=True)
+            return out
+        except Exception:
+            return []
+
+    @staticmethod
+    def _read_short_price_levels(symbol: str) -> list:
+        """
+        Reads high_bound_prices.html from the per-coin folder and returns a list of SHORT (orange) price levels.
+        Returned ordering is lowest->highest so:
+          N1 = 1st orange line (bottom)
+          ...
+          N7 = 7th orange line (top)
+        """
+        sym = str(symbol).upper().strip()
+        folder = base_paths.get(sym, main_dir if sym == "BTC" else os.path.join(main_dir, sym))
+        path = os.path.join(folder, "high_bound_prices.html")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = (f.read() or "").strip()
+            if not raw:
+                return []
+
+            # Normalize common formats
+            raw = raw.strip().strip("[]()")
+            raw = raw.replace(",", " ").replace(";", " ").replace("|", " ")
+            raw = raw.replace("\n", " ").replace("\t", " ")
+            parts = [p for p in raw.split() if p]
+
+            vals = []
+            for p in parts:
+                try:
+                    vals.append(float(p))
+                except Exception:
+                    continue
+
+            # De-dupe, then sort low->high for stable N1..N7 mapping
+            out = []
+            seen = set()
+            for v in vals:
+                k = round(float(v), 12)
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append(float(v))
+            out.sort()  # ascending order
+            return out
+        except Exception:
+            return []
+
     def initialize_dca_levels(self):
 
         """
@@ -1153,15 +1243,23 @@ class CryptoAPITrading:
 
             # Neural DCA only applies to first 4 DCA stages:
             # stage 0-> neural 4, stage 1->5, stage 2->6, stage 3->7
+            neural_distance_info = ""
             if next_stage < 4:
                 neural_next = next_stage + 4
-                next_dca_display = f"{hard_next:.2f}% / N{neural_next}"
+                # Calculate distance to next neural level
+                blue_lines = self._read_long_price_levels(symbol)
+                if blue_lines and neural_next <= len(blue_lines):
+                    target_price = blue_lines[neural_next - 1]  # N4 is index 3
+                    distance = current_buy_price - target_price
+                    distance_pct = (distance / current_buy_price) * 100 if current_buy_price > 0 else 0
+                    neural_distance_info = f" ({self._fmt_price(target_price)}, ${distance:.2f} / {distance_pct:.2f}% away)"
+                next_dca_display = f"{hard_next:.2f}% / N{neural_next}{neural_distance_info}"
             else:
                 next_dca_display = f"{hard_next:.2f}%"
 
             # --- DCA DISPLAY LINE (pick whichever trigger line is higher: NEURAL vs HARD) ---
             # Hardcoded gives an actual price line: cost_basis * (1 + hard_next%).
-            # Neural is level-based; for display we treat it as "higher" only once its condition is already met.
+            # Neural uses actual predicted price levels from low_bound_prices.html.
             dca_line_source = "HARD"
             dca_line_price = 0.0
             dca_line_pct = 0.0
@@ -1171,18 +1269,27 @@ class CryptoAPITrading:
                 hard_line_price = avg_cost_basis * (1.0 + (hard_next / 100.0))
                 dca_line_price = hard_line_price
 
-                # If neural is already satisfied for this stage, then neural is effectively the "higher/earlier" trigger.
-                # For display purposes, treat that as an immediate line at current price (i.e., DCA is ready NOW).
+                # Neural DCA: read actual price levels and use whichever is higher (triggers first as price drops)
                 if next_stage < 4:
-                    neural_level_needed_disp = next_stage + 4
-                    neural_level_now_disp = self._read_long_dca_signal(symbol)
+                    neural_level_needed_disp = next_stage + 4  # stage 0->N4, 1->N5, 2->N6, 3->N7
+                    neural_levels = self._read_long_price_levels(symbol)  # highest->lowest == N1..N7
+                    
+                    neural_line_price = 0.0
+                    if len(neural_levels) >= neural_level_needed_disp:
+                        neural_line_price = float(neural_levels[neural_level_needed_disp - 1])
+                    
+                    # Sanity check: only use neural price if it's realistic (within 50% of current price)
+                    # Protects against corrupted data or missing files causing bad triggers
+                    if neural_line_price > 0 and current_buy_price > 0:
+                        price_deviation = abs(neural_line_price - current_buy_price) / current_buy_price
+                        if price_deviation > 0.5:
+                            # Neural price is wildly off - ignore it and fall back to hardcoded
+                            neural_line_price = 0.0
 
-                    neural_ready_now = (gain_loss_percentage_buy < 0) and (neural_level_now_disp >= neural_level_needed_disp)
-                    if neural_ready_now:
-                        neural_line_price = current_buy_price
-                        if neural_line_price > dca_line_price:
-                            dca_line_price = neural_line_price
-                            dca_line_source = f"NEURAL N{neural_level_needed_disp}"
+                    # Whichever is higher will be hit first as price drops
+                    if neural_line_price > dca_line_price:
+                        dca_line_price = neural_line_price
+                        dca_line_source = f"NEURAL N{neural_level_needed_disp}"
 
                 # PnL% shown alongside DCA is the normal buy-side PnL%
                 # (same calculation as GUI "Buy Price PnL": current buy/ask vs avg cost basis)
@@ -1292,9 +1399,13 @@ class CryptoAPITrading:
                     state = {"active": False, "line": base_pm_line, "peak": 0.0, "was_above": False}
                     self.trailing_pm[symbol] = state
                 else:
-                    # Never let the line be below the (possibly updated) base PM start line
-                    if state.get("line", 0.0) < base_pm_line:
+                    # Ensure line stays at proper floor based on active state
+                    if not state.get("active", False):
                         state["line"] = base_pm_line
+                    else:
+                        # Once trailing is active, the line should never be below the base PM start line
+                        if state.get("line", 0.0) < base_pm_line:
+                            state["line"] = base_pm_line
 
                 # Use SELL price because that's what you actually get when you market sell
                 above_now = current_sell_price >= state["line"]
@@ -1417,6 +1528,10 @@ class CryptoAPITrading:
 
                         # Only record a DCA buy timestamp on success (so skips never advance anything)
                         self._note_dca_buy(symbol)
+
+                        # DCA changes avg_cost_basis, so the PM line must be rebuilt from the new basis
+                        # (this will re-init to 5% if DCA=0, or 2.5% if DCA>=1)
+                        self.trailing_pm.pop(symbol, None)
 
                         trades_made = True
                         print(f"  Successfully placed DCA buy order for {symbol}.")

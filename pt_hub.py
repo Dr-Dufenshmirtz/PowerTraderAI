@@ -1160,8 +1160,10 @@ class CandleChart(ttk.Frame):
         try:
             trans = blended_transform_factory(self.ax.transAxes, self.ax.transData)
             used_y: List[float] = []
+            boxed_y: List[float] = []  # Track positions with boxes (need more clearance)
             y0, y1 = self.ax.get_ylim()
             y_pad = max((y1 - y0) * 0.012, 1e-9)
+            y_box_pad = y_pad * 3.0  # Boxes need 3x more space
 
             def _label_right(y: Optional[float], tag: str, color: str) -> None:
                 if y is None:
@@ -1178,6 +1180,7 @@ class CandleChart(ttk.Frame):
                     if abs(yy - prev) < y_pad:
                         yy = prev + y_pad
                 used_y.append(yy)
+                boxed_y.append(yy)  # Mark this as a boxed label
 
                 self.ax.text(
                     1.01,
@@ -1199,11 +1202,53 @@ class CandleChart(ttk.Frame):
                     clip_on=False,
                 )
 
+            def _label_neural(y: Optional[float], tag: str, color: str) -> None:
+                """Label for neural levels - no box, only show if visible on chart"""
+                if y is None:
+                    return
+                try:
+                    yy = float(y)
+                    if (not math.isfinite(yy)) or yy <= 0:
+                        return
+                    # Skip if outside visible chart range
+                    if yy < y0 or yy > y1:
+                        return
+                except Exception:
+                    return
+
+                # Use larger padding when near boxed labels (they take more vertical space)
+                for prev in used_y:
+                    pad_to_use = y_box_pad if prev in boxed_y else y_pad
+                    if abs(yy - prev) < pad_to_use:
+                        yy = prev + pad_to_use
+                used_y.append(yy)
+
+                self.ax.text(
+                    1.01,
+                    yy,
+                    f"{tag} {_fmt_price(yy)}",
+                    transform=trans,
+                    ha="left",
+                    va="center",
+                    fontsize=CHART_LABEL_FONT_SIZE,
+                    fontfamily=CHART_FONT_FAMILY,
+                    color=color,
+                    zorder=20,
+                    clip_on=False,
+                )
+
             # Map to your terminology: Ask=buy line, Bid=sell line
             _label_right(current_buy_price, "ASK", CHART_ASK_LINE)
             _label_right(current_sell_price, "BID", CHART_BID_LINE)
             _label_right(dca_line_price, "DCA", CHART_DCA_LINE)
             _label_right(trail_line, "SELL", CHART_SELL_LINE)
+            
+            # Add neural level labels (no boxes, only if visible)
+            for idx, lv in enumerate(long_levels, start=1):
+                _label_neural(lv, f"N{idx}", CHART_NEURAL_LONG)
+            
+            for idx, lv in enumerate(short_levels, start=1):
+                _label_neural(lv, f"N{idx}", CHART_NEURAL_SHORT)
         except Exception:
             pass
 
