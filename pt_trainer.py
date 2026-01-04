@@ -110,9 +110,7 @@ avg50 = []
 sells_count = 0
 prediction_prices_avg_list = []
 list_len = 0
-restarting = 'no'
 in_trade = 'no'
-restarted_yet = 0
 
 # ===== COMMENTED OUT - REDUNDANT MODULE-LEVEL VARIABLES =====
 # These variables are immediately overwritten when the main loop starts at line ~458
@@ -206,6 +204,13 @@ def vprint(*args, **kwargs):
 _memory_cache = {}  # tf_choice -> dict(memory_list, weight_list, high_weight_list, low_weight_list, dirty)
 _last_threshold_written = {}  # tf_choice -> float
 
+# Global write buffer to reduce disk I/O during training
+# Thresholds are buffered and written only at critical points (timeframe end, training complete, user stop)
+_write_buffer = {
+	"thresholds": {},           # {timeframe: threshold_value}
+	"last_checkpoint_time": 0,  # timestamp of last safety checkpoint
+}
+
 def _read_text(path):
 	with open(path, "r", encoding="utf-8", errors="ignore") as f:
 		return f.read()
@@ -287,9 +292,52 @@ def write_threshold_sometimes(tf_choice, perfect_threshold, loop_i, every=200):
 	except:
 		pass
 
+def buffer_threshold(tf_choice, perfect_threshold):
+	"""Buffer threshold in memory instead of writing to disk immediately.
+	This dramatically reduces disk I/O during training loops."""
+	_write_buffer["thresholds"][tf_choice] = perfect_threshold
+	_last_threshold_written[tf_choice] = perfect_threshold
+
+def flush_all_buffers(force=True):
+	"""Write all buffered data to disk. Called at critical points:
+	- End of each timeframe
+	- Training completion
+	- User stop
+	- Error/crash (via signal handler)
+	
+	This ensures data integrity while minimizing disk writes during training."""
+	debug_print("[DEBUG] TRAINER: Flushing all buffers to disk...")
+	
+	# 1. Write all buffered thresholds
+	for tf_choice, threshold_value in _write_buffer["thresholds"].items():
+		try:
+			with open(f"neural_perfect_threshold_{tf_choice}.txt", "w+", encoding="utf-8") as f:
+				f.write(str(threshold_value))
+			debug_print(f"[DEBUG] TRAINER: Wrote threshold for {tf_choice}: {threshold_value:.4f}")
+		except Exception as e:
+			debug_print(f"[DEBUG] TRAINER: Failed to write threshold for {tf_choice}: {e}")
+	
+	# 2. Flush all cached memories/weights for all timeframes
+	for tf_choice in list(_memory_cache.keys()):
+		try:
+			flush_memory(tf_choice, force=force)
+			debug_print(f"[DEBUG] TRAINER: Flushed memory cache for {tf_choice}")
+		except Exception as e:
+			debug_print(f"[DEBUG] TRAINER: Failed to flush memory for {tf_choice}: {e}")
+	
+	# 3. Update checkpoint timestamp
+	_write_buffer["last_checkpoint_time"] = int(time.time())
+	debug_print("[DEBUG] TRAINER: All buffers flushed successfully")
+
 def mark_training_error(error_msg: str):
 	"""Mark training as ERROR in status file before exiting on failures.
 	This prevents GUI from thinking trainer is still running after crash."""
+	# Try to save any buffered data before marking error
+	try:
+		flush_all_buffers(force=True)
+	except Exception:
+		pass  # Don't let flush errors prevent error reporting
+	
 	try:
 		with open("trainer_status.json", "w", encoding="utf-8") as f:
 			json.dump(
@@ -442,13 +490,7 @@ def restart_program():
 		logging.error(e)
 	python = sys.executable
 	os.execl(python, python, * sys.argv)
-try:
-	if restarted_yet > 2:
-		restarted_yet = 0
-	else:
-		pass
-except:
-	restarted_yet = 0
+
 import_path = os.path.join(os.path.dirname(__file__), "training_settings.json")
 default_timeframes = [
     "1hour", "2hour", "4hour", "8hour", "12hour", "1day", "1week"
@@ -492,6 +534,13 @@ coin_choice = _arg_coin + '-USDT'
 
 # Signal handler to update status on forced exit (Ctrl+C, kill, etc.)
 def _signal_handler(signum, frame):
+	print("\nTraining interrupted. Saving all data...")
+	# Critical: flush all buffered data before exit
+	try:
+		flush_all_buffers(force=True)
+	except Exception as e:
+		print(f"Warning: Error flushing buffers: {e}")
+	
 	try:
 		with open("trainer_status.json", "w", encoding="utf-8") as f:
 			json.dump(
@@ -506,6 +555,7 @@ def _signal_handler(signum, frame):
 			)
 	except Exception:
 		pass
+	print("Data saved. Exiting...")
 	sys.exit(0)
 
 # Register signal handlers
@@ -544,7 +594,6 @@ the_big_index = 0
 while True:
 	# tf_choice is set inside the loop, so we'll add debug at the point where it's known
 	list_len = 0
-	restarting = 'no'
 	in_trade = 'no'
 	updowncount = 0
 	updowncount1 = 0
@@ -631,17 +680,10 @@ while True:
 	low_weight_list = _mem["low_weight_list"]
 	memory_list_empty = 'no' if len(memory_list) > 0 else 'yes'
 
-	tf_list = [tf_choice, tf_choice, tf_choice]
 	choice_index = tf_choices.index(tf_choice)
-	minutes_list = [tf_minutes[choice_index], tf_minutes[choice_index], tf_minutes[choice_index]]
-	if restarted_yet < 3:
-		timeframe = tf_list[restarted_yet]
-		timeframe_minutes = minutes_list[restarted_yet]
-	else:
-		timeframe = tf_list[2]
-		timeframe_minutes = minutes_list[2]
+	timeframe = tf_choice
+	timeframe_minutes = tf_minutes[choice_index]
 	start_time = int(time.time())
-	restarting = 'no'
 	success_rate = 85
 	volume_success_rate = 60
 	candles_to_predict = 1#droplet setting (Max is half of number_of_candles)(Min is 2)
@@ -740,13 +782,8 @@ while True:
 			break
 		else:
 			continue
-	if timeframe == '1day' or timeframe == '1week':
-		if restarted_yet == 0:
-			index = int(len(history_list)/2)
-		else:
-			index = 1
-	else:
-		index = int(len(history_list)/2)
+	# Start from halfway point in history for all timeframes
+	index = int(len(history_list)/2)
 	price_list = []
 	high_price_list = []
 	low_price_list = []
@@ -802,10 +839,9 @@ while True:
 	history_list2 = []
 	perfect_threshold = 1.0
 	loop_i = 0  # counts inner training iterations (used to throttle disk IO)
-	if restarted_yet < 2:
-		price_list_length = 10
-	else:
-		price_list_length = int(len(price_list)*0.5)
+	# Start with 1 candle and grow 1 at a time for maximum learning and self-correction
+	price_list_length = 1
+	debug_print(f"[DEBUG] TRAINER: Starting window size: {price_list_length} candles (total: {len(price_list)})")
 	while True:
 		while True:
 			loop_i += 1
@@ -923,8 +959,8 @@ while True:
 				except Exception:
 					pass
 
-				# Flush any cached memory/weights before exit
-				flush_memory(tf_choice, force=True)
+				# Flush all buffered data (thresholds + memory/weights) before exit
+				flush_all_buffers(force=True)
 
 				# Mark as stopped (not ERROR - this was intentional user action)
 				try:
@@ -951,7 +987,6 @@ while True:
 			while True:
 				try:
 					print()
-					print(f'Training cycle: {restarted_yet + 1}')
 					print(f'Timeframe: {timeframe}')
 					try:
 						current_pattern_length = number_of_candles[number_of_candles_index]
@@ -1160,7 +1195,8 @@ while True:
 					
 					debug_print(f"[DEBUG] TRAINER: perfect_threshold adjusted to {perfect_threshold:.4f} (matches: {len(unweighted)})")
 					
-					write_threshold_sometimes(tf_choice, perfect_threshold, loop_i, every=200)
+					# Buffer threshold in memory instead of writing to disk
+					buffer_threshold(tf_choice, perfect_threshold)
 
 					try:
 						index = 0
@@ -1453,33 +1489,54 @@ while True:
 						while True:
 							try:
 								try:
+									# Grow by 1 candle at a time for maximum learning
 									price_list_length += 1
 									which_candle_of_the_prediction_index += 1
-									try:
-										if len(price_list2)>=int(len(price_list)*0.25) and restarted_yet < 2:
-											restarted_yet += 1
-											restarting = 'yes'
-											break
-										else:
-											restarting = 'no'
-									except:
-										restarting = 'no'
+									# Check if we've processed all candles for this timeframe
 									if len(price_list2) == len(price_list):
+										# OPTIMIZATION: Prune weak patterns before saving (keeps files lean)
+										# Remove patterns with weight < 0.1 (they contribute almost nothing to predictions)
+										debug_print(f"[DEBUG] TRAINER: Pruning weak patterns (weight < 0.1) for {tf_choice}")
+										try:
+											_mem = _memory_cache.get(tf_choice)
+											if _mem:
+												original_count = len(_mem["memory_list"])
+												# Find indices of patterns worth keeping (handles corrupt weights gracefully)
+												good_indices = []
+												for i in range(len(_mem["weight_list"])):
+													try:
+														if i < len(_mem["weight_list"]) and float(_mem["weight_list"][i]) >= 0.1:
+															good_indices.append(i)
+													except (ValueError, TypeError):
+														pass  # Skip corrupt weight entries
+												
+												# Keep only good patterns
+												_mem["memory_list"] = [_mem["memory_list"][i] for i in good_indices if i < len(_mem["memory_list"])]
+												_mem["weight_list"] = [_mem["weight_list"][i] for i in good_indices if i < len(_mem["weight_list"])]
+												_mem["high_weight_list"] = [_mem["high_weight_list"][i] for i in good_indices if i < len(_mem["high_weight_list"])]
+												_mem["low_weight_list"] = [_mem["low_weight_list"][i] for i in good_indices if i < len(_mem["low_weight_list"])]
+												_mem["dirty"] = True
+												
+												pruned_count = original_count - len(_mem["memory_list"])
+												if pruned_count > 0:
+													debug_print(f"[DEBUG] TRAINER: Pruned {pruned_count} weak patterns ({original_count} -> {len(_mem['memory_list'])})")
+										except Exception as e:
+											debug_print(f"[DEBUG] TRAINER: Pruning failed (non-critical): {e}")
+										
+										# Flush all buffered data before switching to next timeframe
+										debug_print(f"[DEBUG] TRAINER: Flushing buffers before timeframe switch (the_big_index: {the_big_index} -> {the_big_index + 1})")
+										flush_all_buffers(force=True)
+										
 										# Clear memory cache before switching timeframes to prevent cross-contamination
-										debug_print(f"[DEBUG] TRAINER: Clearing memory cache before timeframe switch (the_big_index: {the_big_index} -> {the_big_index + 1})")
+										debug_print(f"[DEBUG] TRAINER: Clearing memory cache after flush")
 										_memory_cache.clear()
 										the_big_index += 1
-										restarted_yet = 0
-										print('restarting')
-										restarting = 'yes'
+										print('Moving to next timeframe')
 										avg50 = []
 										sells_count = 0
 										prediction_prices_avg_list = []
 										list_len = 0
 										in_trade = 'no'
-										updowncount = 0
-										updowncount1 = 0
-										updowncount1_2 = 0
 										updowncount1_3 = 0
 										updowncount1_4 = 0
 										high_baseline_price_change_pct = 0.0
@@ -1561,8 +1618,8 @@ while True:
 											if len(number_of_candles) == 1:
 												print("Finished processing all timeframes (number_of_candles has only one entry). Exiting.")
 												
-												# CRITICAL: Flush final memory/weight updates before marking complete
-												flush_memory(tf_choice, force=True)
+												# CRITICAL: Flush all buffered data (thresholds + memory/weights) before marking complete
+												flush_all_buffers(force=True)
 												
 												try:
 													file = open('trainer_last_start_time.txt','w+')
@@ -1673,10 +1730,6 @@ while True:
 															_mem["high_weight_list"].append('1.0')
 															_mem["low_weight_list"].append('1.0')
 															_mem["dirty"] = True
-															
-															# occasional batch flush
-															if loop_i % 200 == 0:
-																flush_memory(tf_choice)
 														else:
 															# Find the minimum length across all lists to avoid index errors
 															# Process as much valid data as possible even if lists got out of sync
@@ -1756,10 +1809,6 @@ while True:
 																# Note: _mem already loaded at top of outer training loop, no need to reload
 																_mem["dirty"] = True
 
-																# occasional batch flush
-																if loop_i % 200 == 0:
-																	flush_memory(tf_choice)
-
 																indy += 1
 																# Loop condition moved to top of while loop for safety
 													except:
@@ -1812,11 +1861,3 @@ while True:
 					print("CRITICAL ERROR in main training loop. Training cannot continue safely.")
 					mark_training_error("Main training loop critical error")
 					sys.exit(1)
-			if restarting == 'yes':
-				break
-			else:
-				continue
-		if restarting == 'yes':
-			break
-		else:
-			continue

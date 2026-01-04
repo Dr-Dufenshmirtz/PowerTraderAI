@@ -439,7 +439,7 @@ def _coin_is_trained(sym: str) -> bool:
 		debug_print(f"[DEBUG] {sym}: Unexpected error checking training status: {type(e).__name__}: {e}")
 		return False
 
-# --- GUI HUB "runner ready" gate file (read by gui_hub.py Start All toggle) ---
+# --- GUI HUB "runner ready" gate file (read by gui_hub.py Autopilot toggle) ---
 
 HUB_DIR = os.environ.get("POWERTRADER_HUB_DIR") or os.path.join(BASE_DIR, "hub_data")
 try:

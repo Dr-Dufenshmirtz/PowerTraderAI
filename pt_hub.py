@@ -50,35 +50,35 @@ from matplotlib.patches import Rectangle
 from matplotlib.ticker import FuncFormatter
 from matplotlib.transforms import blended_transform_factory
 
-# Default theme colors
-DARK_BG = "#070B10"
-DARK_BG2 = "#0B1220"
-DARK_PANEL = "#0E1626"
-DARK_PANEL2 = "#121C2F"
-DARK_BORDER = "#243044"
-DARK_FG = "#C7D1DB"
-LIVE_OUTPUT_FG = "#C7D1DB"  # Live output text color (defaults to DARK_FG)
+# Default theme colors (Modern Dark)
+DARK_BG = "#0D1117"
+DARK_BG2 = "#161B22"
+DARK_PANEL = "#1A1F29"
+DARK_PANEL2 = "#21262D"
+DARK_BORDER = "#30363D"
+DARK_FG = "#E6EDF3"
+LIVE_OUTPUT_FG = "#E6EDF3"  # Live output text color (defaults to DARK_FG)
 DARK_MUTED = "#8B949E"
-DARK_ACCENT = "#00FF66"
+DARK_ACCENT = "#FFD54F"
 DARK_ACCENT2 = "#00E5FF"
-DARK_SELECT_BG = "#17324A"
-DARK_SELECT_FG = "#00FF66"
+DARK_SELECT_BG = "#2D333B"
+DARK_SELECT_FG = "#FFD54F"
 
 # Chart colors
-CHART_CANDLE_UP = "#00cc00"
-CHART_CANDLE_DOWN = "#ff3333"
-CHART_NEURAL_LONG = "#3399ff"
-CHART_NEURAL_SHORT = "#ff9933"
-CHART_SELL_LINE = "#00ff00"
-CHART_DCA_LINE = "#ff0000"
-CHART_ASK_LINE = "#9933ff"
-CHART_BID_LINE = "#00cccc"
-CHART_ACCOUNT_LINE = "#00aaff"
+CHART_CANDLE_UP = "#00E676"
+CHART_CANDLE_DOWN = "#FF4081"
+CHART_NEURAL_LONG = "#2196F3"
+CHART_NEURAL_SHORT = "#FF9800"
+CHART_SELL_LINE = "#00E676"
+CHART_DCA_LINE = "#FF4081"
+CHART_ASK_LINE = "#9C27B0"
+CHART_BID_LINE = "#00BCD4"
+CHART_ACCOUNT_LINE = "#2196F3"
 
-# Font settings
-LOG_FONT_FAMILY = "TkFixedFont"
+# Font settings (Modern Segoe UI)
+LOG_FONT_FAMILY = "Consolas"
 LOG_FONT_SIZE = 8
-CHART_FONT_FAMILY = "sans-serif"
+CHART_FONT_FAMILY = "Segoe UI"
 CHART_LABEL_FONT_SIZE = 9
 
 THEME_SETTINGS_FILE = "theme_settings.json"
@@ -106,7 +106,7 @@ DEFAULT_THEME = {
     "chart_bid_line": CHART_BID_LINE,
     "chart_account_line": CHART_ACCOUNT_LINE,
     "font_family": "Segoe UI",
-    "font_size": 10,
+    "font_size": 11,
     "log_font_family": "Consolas",
     "log_font_size": 8,
     "chart_font_family": "Segoe UI",
@@ -503,7 +503,7 @@ DEFAULT_TRADING_CONFIG = {
 # Default training config
 DEFAULT_TRAINING_CONFIG = {
     "staleness_days": 14,
-    "auto_train_when_stale": False,
+    "auto_train_when_stale": True,
     "timeframes": [
         "1hour",
         "2hour",
@@ -957,7 +957,7 @@ class CandleChart(ttk.Frame):
         # Reserve bottom space so date+time x tick labels are always visible
         # Also reserve right space so the price labels (Bid/Ask/DCA/Sell) can sit outside the plot.
         # Also reserve a bit of top space so the title never gets clipped.
-        self.fig.subplots_adjust(bottom=0.15, right=0.87, top=0.93)
+        self.fig.subplots_adjust(left=0.09, bottom=0.18, right=0.91, top=0.92)
 
         self.ax = self.fig.add_subplot(111)
         self._apply_dark_chart_style()
@@ -1434,7 +1434,7 @@ class AccountValueChart(ttk.Frame):
         # Reserve bottom space so date+time x tick labels are always visible
         # Also reserve right space so the price labels (Bid/Ask/DCA/Sell) can sit outside the plot.
         # Also reserve a bit of top space so the title never gets clipped.
-        self.fig.subplots_adjust(bottom=0.18, right=0.88, top=0.92)
+        self.fig.subplots_adjust(left=0.09, bottom=0.18, right=0.88, top=0.92)
 
         self.ax = self.fig.add_subplot(111)
         self._apply_dark_chart_style()
@@ -1795,6 +1795,16 @@ class PowerTraderHub(tk.Tk):
 
         # internal: when Start All is pressed, we start the runner first and only start the trader once ready
         self._auto_start_trader_pending = False
+
+        # Autopilot mode state (orchestrates train → thinker → trader)
+        self._auto_mode_active = False
+        self._auto_mode_phase = ""
+        self._auto_mode_pending_coins: set = set()
+
+        # auto-retrain state (proactive retraining when approaching staleness)
+        self._auto_retraining_active = False
+        self._auto_retrain_pending_coins: set = set()
+        self._last_auto_retrain_check = 0.0
 
         # cache latest trader status so charts can overlay buy/sell lines
         self._last_positions: Dict[str, dict] = {}
@@ -2174,7 +2184,7 @@ class PowerTraderHub(tk.Tk):
             activeforeground=DARK_SELECT_FG,
             selectcolor=DARK_FG,
         )
-        m_scripts.add_command(label="Start All", command=self.start_all_scripts)
+        m_scripts.add_command(label="🚀 Autopilot", command=self.start_all_scripts)
         m_scripts.add_command(label="Stop All", command=self.stop_all_scripts)
         m_scripts.add_separator()
         m_scripts.add_command(label="Start Neural Runner", command=self.start_neural)
@@ -2184,7 +2194,7 @@ class PowerTraderHub(tk.Tk):
         m_scripts.add_command(label="Stop Trader", command=self.stop_trader)
         m_scripts.add_separator()
         m_scripts.add_checkbutton(
-            label="Auto-start on Launch",
+            label="🚀 Auto-start Autopilot on Launch",
             command=self.toggle_auto_start,
             variable=self.auto_start_var
         )
@@ -2320,16 +2330,8 @@ class PowerTraderHub(tk.Tk):
         # ----------------------------
         top_controls = ttk.LabelFrame(left_split, text="Controls / Health")
 
-        # Layout requirement:
-        #   - Buttons (full width) ABOVE
-        #   - Dual section BELOW:
-        #       LEFT  = Status + Account + Profit
-        #       RIGHT = Training
-        buttons_bar = ttk.Frame(top_controls)
-        buttons_bar.pack(fill="x", expand=False, padx=0, pady=0)
-
         info_row = ttk.Frame(top_controls)
-        info_row.pack(fill="x", expand=False, padx=0, pady=0)
+        info_row.pack(fill="x", expand=False, padx=6, pady=6)
 
         # LEFT column (status + account/profit)
         controls_left = ttk.Frame(info_row)
@@ -2367,107 +2369,11 @@ class PowerTraderHub(tk.Tk):
         self.train_coin_combo.bind("<<ComboboxSelected>>", _sync_train_coin)
         _sync_train_coin()
 
-        # Fixed controls bar (stable layout; no wrapping/reflow on resize)
-        # Wrapped in a scrollable canvas so buttons are never cut off when the window is resized.
-        btn_scroll_wrap = ttk.Frame(buttons_bar)
-        btn_scroll_wrap.pack(fill="x", expand=False, padx=6, pady=6)
-
-        btn_canvas = tk.Canvas(btn_scroll_wrap, bg=DARK_BG, highlightthickness=0, bd=0, height=1)
-        btn_scroll_y = ttk.Scrollbar(btn_scroll_wrap, orient="vertical", command=btn_canvas.yview)
-        btn_scroll_x = ttk.Scrollbar(btn_scroll_wrap, orient="horizontal", command=btn_canvas.xview)
-        btn_canvas.configure(yscrollcommand=btn_scroll_y.set, xscrollcommand=btn_scroll_x.set)
-
-        btn_scroll_wrap.grid_columnconfigure(0, weight=1)
-        btn_scroll_wrap.grid_rowconfigure(0, weight=0)
-
-        btn_canvas.grid(row=0, column=0, sticky="ew")
-        btn_scroll_y.grid(row=0, column=1, sticky="ns")
-        btn_scroll_x.grid(row=1, column=0, sticky="ew")
-
-        # Start hidden; we only show scrollbars when needed.
-        btn_scroll_y.grid_remove()
-        btn_scroll_x.grid_remove()
-
-        btn_inner = ttk.Frame(btn_canvas)
-        _btn_inner_id = btn_canvas.create_window((0, 0), window=btn_inner, anchor="nw")
-
-        def _btn_update_scrollbars(event=None):
-            try:
-                # Always keep scrollregion accurate
-                btn_canvas.configure(scrollregion=btn_canvas.bbox("all"))
-                sr = btn_canvas.bbox("all")
-                if not sr:
-                    return
-
-                # --- KEY FIX ---
-                # Resize the canvas height to the buttons' requested height so there is no
-                # dead/empty gap above the horizontal scrollbar.
-                try:
-                    desired_h = max(1, int(btn_inner.winfo_reqheight()))
-                    cur_h = int(btn_canvas.cget("height") or 0)
-                    if cur_h != desired_h:
-                        btn_canvas.configure(height=desired_h)
-                except Exception:
-                    pass
-
-                x0, y0, x1, y1 = sr
-                cw = btn_canvas.winfo_width()
-                ch = btn_canvas.winfo_height()
-
-                need_x = (x1 - x0) > (cw + 1)
-                need_y = (y1 - y0) > (ch + 1)
-
-                if need_x:
-                    btn_scroll_x.grid()
-                else:
-                    btn_scroll_x.grid_remove()
-                    btn_canvas.xview_moveto(0)
-
-                if need_y:
-                    btn_scroll_y.grid()
-                else:
-                    btn_scroll_y.grid_remove()
-                    btn_canvas.yview_moveto(0)
-            except Exception:
-                pass
-
-        def _btn_canvas_on_configure(event=None):
-            try:
-                # Keep the inner window pinned to top-left
-                btn_canvas.coords(_btn_inner_id, 0, 0)
-            except Exception:
-                pass
-            _btn_update_scrollbars()
-
-        btn_inner.bind("<Configure>", _btn_update_scrollbars)
-        btn_canvas.bind("<Configure>", _btn_canvas_on_configure)
-
-        # The original button layout (unchanged), placed inside the scrollable inner frame.
-        btn_bar = ttk.Frame(btn_inner)
-        btn_bar.pack(fill="x", expand=False)
-
-        # Keep groups left-aligned; the spacer column absorbs extra width.
-        btn_bar.grid_columnconfigure(0, weight=0)
-        btn_bar.grid_columnconfigure(1, weight=0)
-        btn_bar.grid_columnconfigure(2, weight=1)
-
         BTN_W = 14
 
-        # (Start All button moved into the left-side info section above Account.)
-        train_group = ttk.Frame(btn_bar)
-        train_group.grid(row=0, column=0, sticky="w", padx=(0, 18), pady=(0, 6))
-
-        # One more pass after layout so scrollbars reflect the true initial size.
-        self.after_idle(_btn_update_scrollbars)
-
-        self.lbl_neural = ttk.Label(controls_left, text="Neural: stopped")
-        self.lbl_neural.pack(anchor="w", padx=6, pady=(0, 2))
-
-        self.lbl_trader = ttk.Label(controls_left, text="Trader: stopped")
-        self.lbl_trader.pack(anchor="w", padx=6, pady=(0, 6))
-
+        # Status display - Last status comes first
         self.lbl_last_status = ttk.Label(controls_left, text="Last status: N/A")
-        self.lbl_last_status.pack(anchor="w", padx=6, pady=(0, 2))
+        self.lbl_last_status.pack(anchor="w", padx=6, pady=(0, 6))
 
         # ----------------------------
         # Training section (everything training-specific lives here)
@@ -2482,12 +2388,12 @@ class PowerTraderHub(tk.Tk):
         self.lbl_training_overview = ttk.Label(training_left, text="Training: N/A")
         self.lbl_training_overview.pack(anchor="w", padx=6, pady=(0, 2))
 
-        self.lbl_flow_hint = ttk.Label(training_left, text="Flow: Train → Start All")
+        self.lbl_flow_hint = ttk.Label(training_left, text="Flow: Train → Autopilot")
         self.lbl_flow_hint.pack(anchor="w", padx=6, pady=(0, 6))
 
         self.training_list = tk.Listbox(
             training_left,
-            height=5,
+            height=4,
             bg=DARK_PANEL,
             fg=DARK_FG,
             selectbackground=DARK_SELECT_BG,
@@ -2502,17 +2408,29 @@ class PowerTraderHub(tk.Tk):
         start_all_row = ttk.Frame(controls_left)
         start_all_row.pack(fill="x", padx=6, pady=(0, 6))
 
+        # Create bold style for autopilot button
+        bold_style = ttk.Style()
+        bold_style.configure("Bold.TButton", font=("Segoe UI", 10, "bold"))
+        
         self.btn_toggle_all = ttk.Button(
             start_all_row,
-            text="Start All",
+            text="🚀 AUTOPILOT",
             width=BTN_W,
+            style="Bold.TButton",
             command=self.toggle_all_scripts,
         )
         self.btn_toggle_all.pack(side="left")
 
-        # Account info (LEFT column, under status)
+        # Neural and Trader status - displayed after Autopilot button
+        self.lbl_neural = ttk.Label(controls_left, text="Neural: stopped")
+        self.lbl_neural.pack(anchor="w", padx=6, pady=(6, 2))
+
+        self.lbl_trader = ttk.Label(controls_left, text="Trader: stopped")
+        self.lbl_trader.pack(anchor="w", padx=6, pady=(0, 6))
+
+        # Account info (LEFT column, under status) - reduced top padding
         acct_box = ttk.LabelFrame(controls_left, text="Account")
-        acct_box.pack(fill="x", padx=6, pady=6)
+        acct_box.pack(fill="x", padx=6, pady=(0, 6))
         
         # Simulation mode banner (prominent warning) - initially hidden
         self.lbl_simulation_banner = ttk.Label(
@@ -2547,9 +2465,8 @@ class PowerTraderHub(tk.Tk):
 
         # Neural levels overview (spans FULL width under the dual section)
         # Shows the current LONG/SHORT level (0..7) for every coin at once.
-        # Only fills needed space (shrinks to one row if that's all that's needed)
         neural_box = ttk.LabelFrame(top_controls, text="Neural Levels (0–7)")
-        neural_box.pack(fill="x", expand=False, padx=6, pady=(0, 6))
+        neural_box.pack(fill="x", expand=False, padx=12, pady=(0, 12))
 
         legend = ttk.Frame(neural_box)
         legend.pack(fill="x", padx=6, pady=(4, 0))
@@ -2564,24 +2481,23 @@ class PowerTraderHub(tk.Tk):
         self.lbl_neural_overview_last.pack(side="right")
 
         # Scrollable area for tiles (auto-hides the scrollbar if everything fits)
-        # Height: Shows 2 rows with extra space for full tile visibility
-        neural_viewport = ttk.Frame(neural_box, height=600)
-        neural_viewport.pack(fill="x", expand=False, padx=6, pady=(4, 6))
-        neural_viewport.pack_propagate(True)  # Fixed height, content scrolls if needed
-        neural_viewport.grid_rowconfigure(0, weight=1)
-        neural_viewport.grid_columnconfigure(0, weight=1)
+        self._neural_viewport_frame = ttk.Frame(neural_box)
+        self._neural_viewport_frame.pack(fill="x", expand=False, padx=6, pady=(4, 6))
+        self._neural_viewport_frame.grid_rowconfigure(0, weight=0)  # Don't expand row, let content size naturally
+        self._neural_viewport_frame.grid_columnconfigure(0, weight=1)
 
         self._neural_overview_canvas = tk.Canvas(
-            neural_viewport,
+            self._neural_viewport_frame,
             bg=DARK_PANEL2,
             highlightthickness=1,
             highlightbackground=DARK_BORDER,
             bd=0,
+            height=110,  # Height for one row of tiles with minimal padding
         )
-        self._neural_overview_canvas.grid(row=0, column=0, sticky="nsew")
+        self._neural_overview_canvas.grid(row=0, column=0, sticky="ew")
 
         self._neural_overview_scroll = ttk.Scrollbar(
-            neural_viewport,
+            self._neural_viewport_frame,
             orient="vertical",
             command=self._neural_overview_canvas.yview,
         )
@@ -2778,14 +2694,14 @@ class PowerTraderHub(tk.Tk):
         self.logs_nb.bind("<<NotebookTabChanged>>", on_tab_selected)
 
         # Add left panes (no trades/history on the left anymore)
-        # Neural Levels shrinks to content, Live Output expands to fill remaining space.
-        left_split.add(top_controls, weight=0)  # Don't expand, just hold content
-        left_split.add(logs_frame, weight=1)     # Take all remaining space
+        # Controls/Health stays fixed size (determined by neural tiles), Live Output fills remaining space
+        left_split.add(top_controls, weight=0)  # Fixed size based on content
+        left_split.add(logs_frame, weight=1)    # Expands to fill remaining vertical space
 
         try:
-            # Neural Levels minsize ensures tiles are visible
-            left_split.paneconfig(top_controls, minsize=400)
-            left_split.paneconfig(logs_frame, minsize=220)
+            # Ensure reasonable minimums
+            left_split.paneconfig(top_controls, minsize=450)
+            left_split.paneconfig(logs_frame, minsize=180)
         except Exception:
             pass
 
@@ -2804,14 +2720,20 @@ class PowerTraderHub(tk.Tk):
                     self.after(10, _init_left_split_sash_once)
                     return
 
-                min_top = 400  # Match minsize
-                min_bottom = 220
+                min_top = 450
+                min_bottom = 180
 
-                # Neural Levels will shrink to content, give Live Output most of the space.
-                # Start with sash at ~480px from top (room for controls + 2 rows of neural tiles)
-                target = 480
+                # Position sash just below Neural Levels content
+                # Measure actual height needed for Controls/Health section
+                try:
+                    top_controls.update_idletasks()
+                    controls_height = top_controls.winfo_reqheight()
+                    target = controls_height + 10
+                except Exception:
+                    # Fallback: fixed position for controls + neural tiles
+                    target = 520
+
                 target = max(min_top, min(total - min_bottom, target))
-
                 left_split.sashpos(0, int(target))
                 self._did_init_left_split_sash = True
             except Exception:
@@ -3381,6 +3303,21 @@ class PowerTraderHub(tk.Tk):
             pass
 
     def start_neural(self) -> None:
+        # Check training status before allowing manual start
+        status_map = self._training_status_map()
+        not_trained = [c for c, s in status_map.items() if s in ("NOT TRAINED", "ERROR", "STOPPED")]
+        stale_coins = self._get_stale_coins()
+        
+        all_needs_training = list(set(not_trained + stale_coins))
+        
+        if all_needs_training:
+            messagebox.showwarning(
+                "Training Required",
+                f"Training is stale or missing for: {', '.join(sorted(all_needs_training))}\n\n"
+                f"Use Autopilot to train and start automatically, or train manually first."
+            )
+            return
+        
         # Reset runner-ready gate file (prevents stale "ready" from a prior run)
         try:
             with open(self.runner_ready_path, "w", encoding="utf-8") as f:
@@ -3391,6 +3328,21 @@ class PowerTraderHub(tk.Tk):
         self._start_process(self.proc_neural, log_q=self.runner_log_q, prefix="[RUNNER] ")
 
     def start_trader(self) -> None:
+        # Check training status before allowing manual start
+        status_map = self._training_status_map()
+        not_trained = [c for c, s in status_map.items() if s in ("NOT TRAINED", "ERROR", "STOPPED")]
+        stale_coins = self._get_stale_coins()
+        
+        all_needs_training = list(set(not_trained + stale_coins))
+        
+        if all_needs_training:
+            messagebox.showwarning(
+                "Training Required",
+                f"Training is stale or missing for: {', '.join(sorted(all_needs_training))}\n\n"
+                f"Use Autopilot to train and start automatically, or train manually first."
+            )
+            return
+        
         self._start_process(self.proc_trader, log_q=self.trader_log_q, prefix="[TRADER] ")
 
     def stop_neural(self) -> None:
@@ -3439,13 +3391,23 @@ class PowerTraderHub(tk.Tk):
         try:
             _safe_write_json(SETTINGS_FILE, self.settings)
             status = "enabled" if self.simulation_mode_var.get() else "disabled"
-            messagebox.showwarning(
-                "Simulation Mode", 
-                f"Simulation mode {status}.\n\n"
-                f"⚠️ When enabled, NO REAL TRADES will be executed.\n"
-                f"All trading logic runs normally but orders are simulated.\n\n"
-                f"Restart the Trader process to apply changes."
-            )
+            
+            if self.simulation_mode_var.get():
+                message = (
+                    f"Simulation mode {status}.\n\n"
+                    f"⚠️ When enabled, NO REAL TRADES will be executed.\n"
+                    f"All trading logic runs normally but orders are simulated.\n\n"
+                    f"Restart the Trader process to apply changes."
+                )
+            else:
+                message = (
+                    f"Simulation mode {status}.\n\n"
+                    f"⚠️ REAL TRADES will now be executed.\n"
+                    f"All buy and sell orders will use real funds.\n\n"
+                    f"Restart the Trader process to apply changes."
+                )
+            
+            messagebox.showwarning("Simulation Mode", message)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save simulation mode setting:\n{e}")
 
@@ -3486,23 +3448,147 @@ class PowerTraderHub(tk.Tk):
             pass
 
     def start_all_scripts(self) -> None:
-        # Enforce flow: Train → Neural → (wait for runner READY) → Trader
-        all_trained = all(self._coin_is_trained(c) for c in self.coins) if self.coins else False
-        if not all_trained:
-            messagebox.showwarning(
-                "Training required",
-                "All coins must be trained before starting Neural Runner.\n\nUse Train All first."
+        """Legacy wrapper for backwards compatibility. Calls start_auto_mode()."""
+        self.start_auto_mode()
+
+    def start_auto_mode(self) -> None:
+        """
+        Auto Mode: Intelligently starts the full trading system.
+        - Checks training status (untrained or stale)
+        - If training needed: trains first, then proceeds
+        - If training current: starts thinker → waits for ready → starts trader
+        """
+        # Prevent duplicate Auto Mode sessions
+        if getattr(self, "_auto_mode_active", False):
+            return
+        
+        # Check training status
+        status_map = self._training_status_map()
+        needs_training = [c for c, s in status_map.items() if s in ("NOT TRAINED", "ERROR", "STOPPED")]
+        
+        # Check staleness (always respect staleness_days from training_settings.json)
+        stale_coins = self._get_stale_coins()
+        
+        all_needs_training = list(set(needs_training + stale_coins))
+        
+        if all_needs_training:
+            # Phase 1: Training required
+            self._auto_mode_active = True
+            self._auto_mode_phase = "TRAINING"
+            self._auto_mode_pending_coins = set(all_needs_training)
+            
+            # Show info about what's being trained
+            messagebox.showinfo(
+                "🚀 Autopilot: Training Required",
+                f"Training is needed for: {', '.join(sorted(all_needs_training))}\n\n"
+                f"Autopilot will train these coins first, then start thinker and trader.\n\n"
+                f"This may take several minutes."
+            )
+            
+            # Start trainers for coins that need it
+            for coin in all_needs_training:
+                self.trainer_coin_var.set(coin)
+                self.start_trainer_for_selected_coin()
+            
+            # Poll for training completion
+            self.after(2000, self._poll_auto_mode_training)
+        else:
+            # Phase 2: Already trained, go straight to thinker→trader
+            self._auto_mode_active = True
+            self._auto_mode_phase = "RUNNING"
+            self._auto_start_trader_pending = True
+            self.start_neural()
+            
+            # Wait for runner to signal readiness before starting trader
+            try:
+                self.after(250, self._poll_runner_ready_then_start_trader)
+            except Exception:
+                pass
+            
+            # Clear auto mode flag (handed off to existing runner→trader logic)
+            self._auto_mode_active = False
+
+    def _poll_auto_mode_training(self) -> None:
+        """Poll training status during Auto Mode training phase."""
+        if not getattr(self, "_auto_mode_active", False):
+            return
+        
+        if getattr(self, "_auto_mode_phase", "") != "TRAINING":
+            return
+        
+        # Check if all pending coins are done training
+        status_map = self._training_status_map()
+        pending = getattr(self, "_auto_mode_pending_coins", set())
+        
+        still_training = [c for c in pending if status_map.get(c) == "TRAINING"]
+        errored = [c for c in pending if status_map.get(c) == "ERROR"]
+        
+        if errored:
+            self._auto_mode_active = False
+            self._auto_mode_phase = ""
+            messagebox.showerror(
+                "🚀 Autopilot: Training Failed",
+                f"Training failed for: {', '.join(sorted(errored))}\n\n"
+                f"Autopilot stopped. Check the training logs for details."
             )
             return
+        
+        if still_training:
+            # Still training, check again in 2 seconds
+            self.after(2000, self._poll_auto_mode_training)
+        else:
+            # All trained! Move to Phase 2: Start thinker→trader
+            self._auto_mode_phase = "RUNNING"
+            self._auto_start_trader_pending = True
+            self.start_neural()
+            
+            # Wait for runner to signal readiness before starting trader
+            try:
+                self.after(250, self._poll_runner_ready_then_start_trader)
+            except Exception:
+                pass
+            
+            # Clear auto mode flag (handed off to existing runner→trader logic)
+            self._auto_mode_active = False
 
-        self._auto_start_trader_pending = True
-        self.start_neural()
-
-        # Wait for runner to signal readiness before starting trader
-        try:
-            self.after(250, self._poll_runner_ready_then_start_trader)
-        except Exception:
-            pass
+    def _poll_auto_retrain_completion(self) -> None:
+        """Poll training status during automatic retraining (when approaching staleness)."""
+        if not getattr(self, "_auto_retraining_active", False):
+            return
+        
+        # Check if all pending coins are done training
+        status_map = self._training_status_map()
+        pending = getattr(self, "_auto_retrain_pending_coins", set())
+        
+        still_training = [c for c in pending if status_map.get(c) == "TRAINING"]
+        errored = [c for c in pending if status_map.get(c) == "ERROR"]
+        
+        if errored:
+            self._auto_retraining_active = False
+            self._auto_retrain_pending_coins = set()
+            messagebox.showerror(
+                "Auto-Retrain Failed",
+                f"Auto-retraining failed for: {', '.join(sorted(errored))}\n\n"
+                f"System remains stopped. Check training logs and use Autopilot to restart."
+            )
+            return
+        
+        if still_training:
+            # Still training, check again in 2 seconds
+            self.after(2000, self._poll_auto_retrain_completion)
+        else:
+            # All retrained! Auto-restart using Auto Mode
+            self._auto_retraining_active = False
+            self._auto_retrain_pending_coins = set()
+            
+            messagebox.showinfo(
+                "Auto-Retrain Complete",
+                "Training has been updated successfully.\n\n"
+                "System will now restart automatically."
+            )
+            
+            # Use Auto Mode to restart (it will skip training since we just completed it)
+            self.start_auto_mode()
 
     def _compute_file_checksum(self, filepath: str) -> str:
         """Compute SHA256 checksum of a file. Returns empty string on error."""
@@ -3571,6 +3657,75 @@ class PowerTraderHub(tk.Tk):
             return (time.time() - ts) <= (14 * 24 * 60 * 60)
         except Exception:
             return False
+
+    def _get_stale_coins(self) -> List[str]:
+        """Returns list of coins whose training is stale (older than staleness_days from training_settings.json)."""
+        training_cfg = _load_training_config()
+        staleness_days = training_cfg.get("staleness_days", 14)
+        max_age_seconds = staleness_days * 24 * 60 * 60
+        
+        stale = []
+        for coin in self.coins:
+            folder = self.coin_folders.get(coin, "")
+            if not folder:
+                continue
+            
+            stamp_path = os.path.join(folder, "trainer_last_training_time.txt")
+            try:
+                if not os.path.isfile(stamp_path):
+                    stale.append(coin)
+                    continue
+                
+                with open(stamp_path, "r", encoding="utf-8") as f:
+                    raw = (f.read() or "").strip()
+                ts = float(raw) if raw else 0.0
+                
+                if ts <= 0 or (time.time() - ts) > max_age_seconds:
+                    stale.append(coin)
+            except Exception:
+                stale.append(coin)
+        
+        return stale
+
+    def _get_coins_near_stale(self, threshold_hours: float = 2.0) -> List[str]:
+        """
+        Returns list of coins whose training will become stale within threshold_hours.
+        Used for proactive auto-retraining.
+        """
+        training_cfg = _load_training_config()
+        staleness_days = training_cfg.get("staleness_days", 14)
+        max_age_seconds = staleness_days * 24 * 60 * 60
+        threshold_seconds = threshold_hours * 60 * 60
+        
+        near_stale = []
+        for coin in self.coins:
+            folder = self.coin_folders.get(coin, "")
+            if not folder:
+                continue
+            
+            stamp_path = os.path.join(folder, "trainer_last_training_time.txt")
+            try:
+                if not os.path.isfile(stamp_path):
+                    # No training file = already stale, not "near stale"
+                    continue
+                
+                with open(stamp_path, "r", encoding="utf-8") as f:
+                    raw = (f.read() or "").strip()
+                ts = float(raw) if raw else 0.0
+                
+                if ts <= 0:
+                    continue
+                
+                age_seconds = time.time() - ts
+                time_until_stale = max_age_seconds - age_seconds
+                
+                # If training will become stale within threshold_hours, flag it
+                if 0 < time_until_stale <= threshold_seconds:
+                    near_stale.append(coin)
+            except Exception:
+                pass
+        
+        return near_stale
 
     def _running_trainers(self) -> List[str]:
         running: List[str] = []
@@ -3812,6 +3967,13 @@ class PowerTraderHub(tk.Tk):
     def stop_all_scripts(self) -> None:
         # Cancel any pending "wait for runner then start trader"
         self._auto_start_trader_pending = False
+        
+        # Clear auto-mode state (in case user stops during auto-mode training)
+        self._auto_mode_active = False
+        self._auto_mode_phase = ""
+        
+        # Note: Don't clear _auto_retraining_active here - it's managed by the auto-retrain flow
+        # and needs to persist through stop/restart cycle
 
         self.stop_neural()
         self.stop_trader()
@@ -3904,6 +4066,79 @@ class PowerTraderHub(tk.Tk):
         neural_running = bool(self.proc_neural.proc and self.proc_neural.proc.poll() is None)
         trader_running = bool(self.proc_trader.proc and self.proc_trader.proc.poll() is None)
 
+        # --- RUNTIME STALENESS CHECK ---
+        # If thinker or trader is running, check if training has become stale
+        # If so, stop everything and notify the user
+        if neural_running or trader_running:
+            stale_coins = self._get_stale_coins()
+            if stale_coins:
+                # Training has become stale during runtime - stop everything
+                self.stop_all_scripts()
+                messagebox.showwarning(
+                    "Training Data Stale",
+                    f"Training data has become stale for: {', '.join(sorted(stale_coins))}\n\n"
+                    f"Thinker and Trader have been stopped.\n\n"
+                    f"Use Autopilot to retrain and restart."
+                )
+
+        # --- AUTO-RETRAIN CHECK (proactive retraining before staleness) ---
+        # Check once per minute (throttle to avoid excessive checks)
+        now = time.time()
+        last_check = getattr(self, "_last_auto_retrain_check", 0)
+        
+        if (now - last_check) >= 60:  # Check every 60 seconds
+            self._last_auto_retrain_check = now
+            
+            # Only proceed if setting is enabled and not already retraining
+            training_cfg = _load_training_config()
+            auto_train_enabled = training_cfg.get("auto_train_when_stale", False)
+            auto_retraining = getattr(self, "_auto_retraining_active", False)
+            
+            if auto_train_enabled and not auto_retraining and (neural_running or trader_running):
+                # Check if any coins have gone stale
+                stale_coins = self._get_stale_coins()
+                
+                if stale_coins:
+                    # At least one coin is stale - batch retrain everything within 24 hours of staleness
+                    near_stale = self._get_coins_near_stale(threshold_hours=24.0)
+                    
+                    # Combine stale + near-stale for batch retraining
+                    all_to_retrain = list(set(stale_coins + near_stale))
+                    
+                    # Training staleness reached - stop, retrain, restart
+                    self._auto_retraining_active = True
+                    self._auto_retrain_pending_coins = set(all_to_retrain)
+                    
+                    # Stop everything gracefully
+                    self.stop_all_scripts()
+                    
+                    # Show notification
+                    stale_list = ', '.join(sorted(stale_coins))
+                    if near_stale:
+                        batch_list = ', '.join(sorted(all_to_retrain))
+                        messagebox.showinfo(
+                            "Auto-Retrain Starting",
+                            f"Training data is stale for: {stale_list}\n\n"
+                            f"Batch retraining all coins within 24hrs of staleness: {batch_list}\n\n"
+                            f"System will restart automatically when complete.\n\n"
+                            f"Estimated time: 5-15 minutes per coin."
+                        )
+                    else:
+                        messagebox.showinfo(
+                            "Auto-Retrain Starting",
+                            f"Training data is stale for: {stale_list}\n\n"
+                            f"System will auto-retrain and restart when complete.\n\n"
+                            f"Estimated time: 5-15 minutes per coin."
+                        )
+                    
+                    # Start training for all coins that need it
+                    for coin in all_to_retrain:
+                        self.trainer_coin_var.set(coin)
+                        self.start_trainer_for_selected_coin()
+                    
+                    # Poll for completion
+                    self.after(2000, self._poll_auto_retrain_completion)
+
         self.lbl_neural.config(text=f"Neural: {'RUNNING' if neural_running else 'STOPPED'}")
         self.lbl_trader.config(text=f"Trader: {'RUNNING' if trader_running else 'STOPPED'}")
 
@@ -3911,21 +4146,20 @@ class PowerTraderHub(tk.Tk):
         try:
             if hasattr(self, "btn_toggle_all") and self.btn_toggle_all:
                 if neural_running or trader_running or bool(getattr(self, "_auto_start_trader_pending", False)):
-                    self.btn_toggle_all.config(text="Stop All")
+                    self.btn_toggle_all.config(text="⏹ STOP AUTOPILOT")
                 else:
-                    self.btn_toggle_all.config(text="Start All")
+                    self.btn_toggle_all.config(text="🚀 AUTOPILOT")
         except Exception:
             pass
 
-        # --- flow gating: Train -> Start All ---
+        # --- Auto Mode button state ---
         status_map = self._training_status_map()
         all_trained = all(v == "TRAINED" for v in status_map.values()) if status_map else False
 
-        # Disable Start All until training is done (but always allow it if something is already running/pending,
-        # so the user can still stop everything).
-        can_toggle_all = True
-        if (not all_trained) and (not neural_running) and (not trader_running) and (not self._auto_start_trader_pending):
-            can_toggle_all = False
+        # Auto Mode is always available when idle (it handles training automatically)
+        # Only disable during active auto-retrain operations
+        auto_retraining = getattr(self, "_auto_retraining_active", False)
+        can_toggle_all = not auto_retraining
 
         try:
             self.btn_toggle_all.configure(state=("normal" if can_toggle_all else "disabled"))
@@ -3955,15 +4189,21 @@ class PowerTraderHub(tk.Tk):
                 for c, st in sig:
                     self.training_list.insert("end", f"{c}: {st.upper()}")
 
-            # show gating hint (Start All handles the runner->ready->trader sequence)
-            if not all_trained:
-                self.lbl_flow_hint.config(text="Flow: TRAIN ALL REQUIRED → THEN START ALL")
+            # show gating hint (Auto Mode handles train->runner->ready->trader sequence)
+            auto_mode_active = getattr(self, "_auto_mode_active", False)
+            auto_mode_phase = getattr(self, "_auto_mode_phase", "")
+            
+            if auto_mode_active and auto_mode_phase == "TRAINING":
+                pending = getattr(self, "_auto_mode_pending_coins", set())
+                self.lbl_flow_hint.config(text=f"Flow: AUTOPILOT TRAINING ({len(pending)} coins) → THINKER → TRADER")
+            elif not all_trained:
+                self.lbl_flow_hint.config(text="Flow: USE AUTOPILOT (will train if needed)")
             elif self._auto_start_trader_pending:
-                self.lbl_flow_hint.config(text="FLOW: RUNNER STARTING → TRADER PENDING")
+                self.lbl_flow_hint.config(text="Flow: THINKER STARTING → TRADER PENDING")
             elif neural_running or trader_running:
-                self.lbl_flow_hint.config(text="Flow: RUNNING (use the button to stop)")
+                self.lbl_flow_hint.config(text="Flow: AUTOPILOT RUNNING (use button to stop)")
             else:
-                self.lbl_flow_hint.config(text="Flow: START ALL")
+                self.lbl_flow_hint.config(text="Flow: AUTOPILOT READY")
         except Exception:
             pass
 
@@ -4518,6 +4758,8 @@ class PowerTraderHub(tk.Tk):
         except Exception:
             pass
 
+        # No dynamic height adjustment needed - let content size naturally
+
         try:
             fn = getattr(self, "_update_neural_overview_scrollbars", None)
             if callable(fn):
@@ -4739,6 +4981,11 @@ class PowerTraderHub(tk.Tk):
     # ---- settings dialog ----
 
     def open_settings_dialog(self) -> None:
+        # Prevent duplicate dialogs - bring existing one to front if already open
+        if hasattr(self, "_settings_dialog_win") and self._settings_dialog_win and self._settings_dialog_win.winfo_exists():
+            self._settings_dialog_win.lift()
+            self._settings_dialog_win.focus_force()
+            return
 
         win = tk.Toplevel(self)
         win.title("Settings")
@@ -4746,6 +4993,15 @@ class PowerTraderHub(tk.Tk):
         win.geometry("860x680")
         win.minsize(760, 560)
         win.configure(bg=DARK_BG)
+        win.transient(self)  # Keep dialog on top of parent
+        
+        self._settings_dialog_win = win
+        
+        def on_close():
+            self._settings_dialog_win = None
+            win.destroy()
+        
+        win.protocol("WM_DELETE_WINDOW", on_close)
 
         # Scrollable settings content (auto-hides the scrollbar if everything fits),
         # using the same pattern as the Neural Levels scrollbar.
@@ -5571,18 +5827,54 @@ class PowerTraderHub(tk.Tk):
                     )
                 else:
                     messagebox.showinfo("Saved", "Settings saved.")
-                win.destroy()
+                on_close()
 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save settings:\n{e}")
 
+        def reset_hub_defaults():
+            try:
+                from copy import deepcopy
+                defaults = deepcopy(DEFAULT_SETTINGS)
+                
+                # Reset Basic Settings
+                main_dir_var.set(defaults.get("main_neural_dir", ""))
+                coins_var.set(",".join(defaults.get("coins", [])))
+                hub_dir_var.set(defaults.get("hub_data_dir", ""))
+                
+                # Reset Script Paths
+                neural_script_var.set(defaults.get("script_neural_runner2", "pt_thinker.py"))
+                trainer_script_var.set(defaults.get("script_neural_trainer", "pt_trainer.py"))
+                trader_script_var.set(defaults.get("script_trader", "pt_trader.py"))
+                
+                # Reset Display Settings
+                ui_refresh_var.set(str(defaults.get("ui_refresh_seconds", 1.0)))
+                chart_refresh_var.set(str(defaults.get("chart_refresh_seconds", 10.0)))
+                candles_limit_var.set(str(defaults.get("candles_limit", 120)))
+                use_custom_theme_var.set(defaults.get("use_custom_theme", False))
+                
+                # Save to file
+                self.settings.update(defaults)
+                self._save_settings()
+                messagebox.showinfo("Reset", "Hub settings have been reset to defaults.")
+                on_close()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to reset settings:\n{e}")
+
         ttk.Button(btns, text="Save", command=save).pack(side="left")
-        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=8)
+        ttk.Button(btns, text="Cancel", command=on_close).pack(side="left", padx=8)
+        ttk.Button(btns, text="Reset to Defaults", command=reset_hub_defaults).pack(side="left")
 
     # ---- config file editors ----
 
     def open_trading_settings_dialog(self) -> None:
         """Open GUI dialog for editing trading_settings.json."""
+        # Prevent duplicate dialogs - bring existing one to front if already open
+        if hasattr(self, "_trading_settings_win") and self._trading_settings_win and self._trading_settings_win.winfo_exists():
+            self._trading_settings_win.lift()
+            self._trading_settings_win.focus_force()
+            return
+        
         config_path = os.path.join(self.project_dir, TRADING_SETTINGS_FILE)
         
         # Load current config
@@ -5593,6 +5885,15 @@ class PowerTraderHub(tk.Tk):
         win.geometry("860x680")
         win.minsize(760, 560)
         win.configure(bg=DARK_BG)
+        win.transient(self)  # Keep dialog on top of parent
+        
+        self._trading_settings_win = win
+        
+        def on_close():
+            self._trading_settings_win = None
+            win.destroy()
+        
+        win.protocol("WM_DELETE_WINDOW", on_close)
 
         # Scrollable content
         viewport = ttk.Frame(win)
@@ -5706,26 +6007,6 @@ class PowerTraderHub(tk.Tk):
 
         window_hours_var = tk.StringVar(value=str(cfg.get("dca", {}).get("window_hours", 24)))
         add_row(dca_frame, dca_r, "Window (hours):", window_hours_var); dca_r += 1
-
-        # --- Reset to Defaults Button ---
-        def reset_trading_defaults():
-            from copy import deepcopy
-            defaults = deepcopy(DEFAULT_TRADING_CONFIG)
-            # DCA
-            dca = defaults.get("dca", {})
-            levels = dca.get("levels", [])
-            for i, var in enumerate(dca_level_vars):
-                if i < len(levels):
-                    var.set(str(levels[i]))
-                else:
-                    var.set("")
-            max_buys_var.set(str(dca.get("max_buys_per_window", 2)))
-            window_hours_var.set(str(dca.get("window_hours", 24)))
-            # Add similar resets for other trading config fields as needed
-            # ...existing code for other fields...
-
-        ttk.Button(frm, text="Reset to Defaults", command=reset_trading_defaults).grid(row=r, column=0, sticky="w", pady=(0, 10))
-        r += 1
 
         multiplier_var = tk.StringVar(value=str(cfg.get("dca", {}).get("position_multiplier", 2.0)))
         add_row(dca_frame, dca_r, "Position multiplier (x):", multiplier_var); dca_r += 1
@@ -5918,18 +6199,70 @@ class PowerTraderHub(tk.Tk):
 
                 _safe_write_json(config_path, new_cfg)
                 messagebox.showinfo("Saved", "Trading settings saved.")
-                win.destroy()
+                on_close()
 
             except ValueError as e:
                 messagebox.showerror("Invalid Input", f"Please enter valid numbers in all fields.\n\n{e}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save settings:\n{e}")
 
-        ttk.Button(btns, text="Apply", command=save).pack(side="left")
-        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=8)
+        def reset_trading_defaults():
+            try:
+                from copy import deepcopy
+                defaults = deepcopy(DEFAULT_TRADING_CONFIG)
+                
+                # Reset DCA fields
+                dca = defaults.get("dca", {})
+                levels = dca.get("levels", [])
+                for i, var in enumerate(dca_level_vars):
+                    if i < len(levels):
+                        var.set(str(levels[i]))
+                    else:
+                        var.set("")
+                max_buys_var.set(str(dca.get("max_buys_per_window", 2)))
+                window_hours_var.set(str(dca.get("window_hours", 24)))
+                multiplier_var.set(str(dca.get("position_multiplier", 2.0)))
+                
+                # Reset Profit Margin fields
+                profit = defaults.get("profit_margin", {})
+                trailing_gap_var.set(str(profit.get("trailing_gap_pct", 0.5)))
+                target_no_dca_var.set(str(profit.get("target_no_dca_pct", 5.0)))
+                target_with_dca_var.set(str(profit.get("target_with_dca_pct", 2.5)))
+                
+                # Reset Entry Signals fields
+                entry = defaults.get("entry_signals", {})
+                long_min_var.set(str(entry.get("long_signal_min", 3)))
+                short_max_var.set(str(entry.get("short_signal_max", 0)))
+                
+                # Reset Position Sizing fields
+                position = defaults.get("position_sizing", {})
+                allocation_var.set(str(position.get("initial_allocation_pct", 0.005)))
+                min_alloc_var.set(str(position.get("min_allocation_usd", 0.5)))
+                
+                # Reset Timing fields
+                timing = defaults.get("timing", {})
+                loop_delay_var.set(str(timing.get("main_loop_delay_seconds", 0.5)))
+                post_trade_var.set(str(timing.get("post_trade_delay_seconds", 5)))
+                
+                # Save to file
+                _safe_write_json(config_path, defaults)
+                messagebox.showinfo("Reset", "Trading settings have been reset to defaults.")
+                on_close()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to reset settings:\n{e}")
+
+        ttk.Button(btns, text="Apply", command=save).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Cancel", command=on_close).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Reset to Defaults", command=reset_trading_defaults).pack(side="left")
 
     def open_training_settings_dialog(self) -> None:
         """Open GUI dialog for editing training_settings.json."""
+        # Prevent duplicate dialogs - bring existing one to front if already open
+        if hasattr(self, "_training_settings_win") and self._training_settings_win and self._training_settings_win.winfo_exists():
+            self._training_settings_win.lift()
+            self._training_settings_win.focus_force()
+            return
+        
         config_path = os.path.join(self.project_dir, TRAINING_SETTINGS_FILE)
         
         # Load current config
@@ -5937,61 +6270,157 @@ class PowerTraderHub(tk.Tk):
 
         win = tk.Toplevel(self)
         win.title("Training Settings")
-        win.geometry("700x420")
-        win.minsize(600, 350)
+        win.geometry("700x440")
+        win.minsize(650, 400)
         win.configure(bg=DARK_BG)
-
-        # Main container with padding
-        container = ttk.Frame(win)
-        container.pack(fill="both", expand=True, padx=20, pady=20)
-
-        # Settings box with border
-        settings_frame = ttk.LabelFrame(container, text=" Training Settings ", padding=15)
-        settings_frame.pack(fill="both", expand=True, pady=(0, 15))
+        win.transient(self)  # Keep dialog on top of parent
         
-        settings_frame.columnconfigure(0, weight=0)
-        settings_frame.columnconfigure(1, weight=1)
+        self._training_settings_win = win
+        
+        def on_close():
+            self._training_settings_win = None
+            win.destroy()
+        
+        win.protocol("WM_DELETE_WINDOW", on_close)
+
+        # Scrollable content (matching Trading Settings style)
+        viewport = ttk.Frame(win)
+        viewport.pack(fill="both", expand=True, padx=12, pady=12)
+        viewport.grid_rowconfigure(0, weight=1)
+        viewport.grid_columnconfigure(0, weight=1)
+
+        settings_canvas = tk.Canvas(
+            viewport,
+            bg=DARK_BG,
+            highlightthickness=1,
+            highlightbackground=DARK_BORDER,
+            bd=0,
+        )
+        settings_canvas.grid(row=0, column=0, sticky="nsew")
+
+        settings_scroll = ttk.Scrollbar(
+            viewport,
+            orient="vertical",
+            command=settings_canvas.yview,
+        )
+        settings_scroll.grid(row=0, column=1, sticky="ns")
+        settings_canvas.configure(yscrollcommand=settings_scroll.set)
+
+        frm = ttk.Frame(settings_canvas, padding=(0, 0, 13, 0))
+        settings_window = settings_canvas.create_window((0, 0), window=frm, anchor="nw")
+
+        def _update_scrollbars(event=None) -> None:
+            try:
+                c = settings_canvas
+                win_id = settings_window
+
+                c.update_idletasks()
+                bbox = c.bbox(win_id)
+                if not bbox:
+                    settings_scroll.grid_remove()
+                    return
+
+                c.configure(scrollregion=bbox)
+                content_h = int(bbox[3] - bbox[1])
+                view_h = int(c.winfo_height())
+
+                if content_h > (view_h + 1):
+                    settings_scroll.grid()
+                else:
+                    settings_scroll.grid_remove()
+                    try:
+                        c.yview_moveto(0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        def _on_canvas_configure(e) -> None:
+            try:
+                settings_canvas.itemconfigure(settings_window, width=int(e.width))
+            except Exception:
+                pass
+            _update_scrollbars()
+
+        settings_canvas.bind("<Configure>", _on_canvas_configure, add="+")
+        frm.bind("<Configure>", _update_scrollbars, add="+")
+
+        def _wheel(e):
+            try:
+                if settings_scroll.winfo_ismapped():
+                    settings_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            except Exception:
+                pass
+
+        settings_canvas.bind("<Enter>", lambda _e: settings_canvas.focus_set(), add="+")
+        settings_canvas.bind("<MouseWheel>", _wheel, add="+")
+        settings_canvas.bind("<Button-4>", lambda _e: settings_canvas.yview_scroll(-3, "units"), add="+")
+        settings_canvas.bind("<Button-5>", lambda _e: settings_canvas.yview_scroll(3, "units"), add="+")
+
+        frm.columnconfigure(0, weight=0)
+        frm.columnconfigure(1, weight=1)
+
+        r = 0
+
+        # General Settings Section
+        general_frame = ttk.LabelFrame(frm, text=" General Settings ", padding=15)
+        general_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        general_frame.columnconfigure(0, weight=0)
+        general_frame.columnconfigure(1, weight=1)
 
         # Staleness threshold
-        ttk.Label(settings_frame, text="Staleness threshold (days):").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
+        ttk.Label(general_frame, text="Staleness threshold (days):").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
         staleness_var = tk.StringVar(value=str(cfg.get("staleness_days", 14)))
-        ent = ttk.Entry(settings_frame, textvariable=staleness_var)
+        ent = ttk.Entry(general_frame, textvariable=staleness_var)
         ent.grid(row=0, column=1, sticky="ew", pady=6)
 
         ttk.Label(
-            settings_frame,
+            general_frame,
             text="Number of days before AI training is considered stale and should be retrained.",
             foreground=DARK_FG,
-            wraplength=450
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 15))
+            wraplength=500
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         # Auto-train checkbox
         auto_train_var = tk.BooleanVar(value=bool(cfg.get("auto_train_when_stale", False)))
-        chk = ttk.Checkbutton(settings_frame, text="Automatically retrain when stale", variable=auto_train_var)
-        chk.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        chk = ttk.Checkbutton(general_frame, text="Automatically retrain when stale", variable=auto_train_var)
+        chk.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 0))
 
-        # --- Timeframes editable box and allowed list ---
-        allowed_timeframes = [
+        # Timeframes Section with Checkboxes
+        timeframes_frame = ttk.LabelFrame(frm, text=" Allowed Timeframes ", padding=15)
+        timeframes_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        timeframes_frame.columnconfigure(0, weight=1)
+
+        available_timeframes = [
             "1min", "5min", "15min", "30min", "1hour", "2hour", "4hour", "8hour", "12hour", "1day", "1week"
         ]
-        ttk.Label(settings_frame, text="Neural Timeframes:").grid(row=3, column=0, sticky="nw", padx=(0, 10), pady=(0, 6))
-        tf_box = tk.Text(settings_frame, height=10, width=24, wrap="none")
-        # Fill with current config, one per line
-        tf_list = cfg.get("timeframes", allowed_timeframes)
-        tf_box.insert("1.0", "\n".join(tf_list))
-        tf_box.grid(row=3, column=0, sticky="nw", padx=(0, 10), pady=(0, 6))
-
-        # Allowed values list (right side)
-        allowed_frame = ttk.Frame(settings_frame)
-        allowed_frame.grid(row=3, column=1, sticky="nw", padx=(20, 0), pady=(0, 6))
-        ttk.Label(allowed_frame, text="Allowed Timeframes:", font=(None, 10, "bold")).pack(anchor="w")
-        for tf in allowed_timeframes:
-            ttk.Label(allowed_frame, text=tf, foreground="#6cf").pack(anchor="w")
+        
+        selected_timeframes = cfg.get("timeframes", ["1hour", "2hour", "4hour", "8hour", "12hour", "1day", "1week"])
+        timeframe_vars = {}
+        
+        # Create checkboxes in a grid layout (4 columns)
+        tf_inner = ttk.Frame(timeframes_frame)
+        tf_inner.grid(row=0, column=0, sticky="w")
+        
+        for i, tf in enumerate(available_timeframes):
+            var = tk.BooleanVar(value=(tf in selected_timeframes))
+            timeframe_vars[tf] = var
+            col = i % 4
+            row = i // 4
+            chk = ttk.Checkbutton(tf_inner, text=tf, variable=var)
+            chk.grid(row=row, column=col, sticky="w", padx=(0, 20), pady=3)
+        
+        # Warning about noise sensitivity for small timeframes
+        ttk.Label(
+            timeframes_frame,
+            text="⚠ Note: Timeframes less than 1 hour may result in buy and sell actions that react too quickly to noise.",
+            foreground="#ff9800",
+            wraplength=550
+        ).grid(row=1, column=0, sticky="w", pady=(10, 0))
 
         # Buttons at bottom
-        btns = ttk.Frame(container)
-        btns.pack(side="bottom", fill="x")
-        btns.columnconfigure(0, weight=1)
+        btns_frame = ttk.Frame(frm)
+        btns_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(10, 0)); r += 1
 
         def save():
             try:
@@ -5999,43 +6428,51 @@ class PowerTraderHub(tk.Tk):
                 if staleness < 1:
                     messagebox.showerror("Validation Error", "Staleness threshold must be at least 1 day")
                     return
-                # Parse and validate timeframes
-                tf_raw = tf_box.get("1.0", tk.END).replace(",", "\n")
-                tf_lines = [x.strip() for x in tf_raw.splitlines() if x.strip()]
-                tf_valid = [x for x in tf_lines if x in allowed_timeframes]
-                tf_invalid = [x for x in tf_lines if x and x not in allowed_timeframes]
-                if not tf_valid:
-                    messagebox.showerror("Validation Error", "At least one valid timeframe is required.")
+                
+                # Get selected timeframes from checkboxes
+                selected = [tf for tf, var in timeframe_vars.items() if var.get()]
+                
+                if not selected:
+                    messagebox.showerror("Validation Error", "At least one timeframe must be selected.")
                     return
-                if tf_invalid:
-                    messagebox.showerror("Validation Error", f"Invalid timeframes: {', '.join(tf_invalid)}\nAllowed: {', '.join(allowed_timeframes)}")
-                    return
+                
                 new_cfg = {
                     "staleness_days": staleness,
                     "auto_train_when_stale": bool(auto_train_var.get()),
-                    "timeframes": tf_valid
+                    "timeframes": selected
                 }
                 _safe_write_json(config_path, new_cfg)
                 messagebox.showinfo("Saved", "Training settings saved.")
-                win.destroy()
+                on_close()
             except ValueError as e:
                 messagebox.showerror("Invalid Input", f"Please enter a valid number for staleness days.\n\n{e}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save settings:\n{e}")
 
-
-        ttk.Button(btns, text="Apply", command=save).pack(side="left")
-        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=8)
-
         def reset_to_defaults():
             try:
-                _safe_write_json(config_path, DEFAULT_TRAINING_CONFIG)
+                from copy import deepcopy
+                defaults = deepcopy(DEFAULT_TRAINING_CONFIG)
+                
+                # Reset all fields to defaults
+                staleness_var.set(str(defaults.get("staleness_days", 14)))
+                auto_train_var.set(bool(defaults.get("auto_train_when_stale", False)))
+                
+                # Reset timeframe checkboxes
+                default_timeframes = defaults.get("timeframes", ["1hour", "2hour", "4hour", "8hour", "12hour", "1day", "1week"])
+                for tf, var in timeframe_vars.items():
+                    var.set(tf in default_timeframes)
+                
+                # Save to file
+                _safe_write_json(config_path, defaults)
                 messagebox.showinfo("Reset", "Training settings have been reset to defaults.")
-                win.destroy()
+                on_close()
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to reset settings:\n{e}")
 
-        ttk.Button(btns, text="Reset to Defaults", command=reset_to_defaults).pack(side="left", padx=8)
+        ttk.Button(btns_frame, text="Apply", command=save).pack(side="left", padx=(0, 8))
+        ttk.Button(btns_frame, text="Cancel", command=on_close).pack(side="left", padx=(0, 8))
+        ttk.Button(btns_frame, text="Reset to Defaults", command=reset_to_defaults).pack(side="left")
 
     def _open_trading_config(self) -> None:
         """Open trading_settings.json in default text editor. Creates with defaults if missing."""
