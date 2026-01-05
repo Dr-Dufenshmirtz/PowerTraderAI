@@ -77,6 +77,27 @@ from nacl.signing import SigningKey
 # instantiate KuCoin market client (kept at top-level like original)
 market = Market(url='https://api.kucoin.com')
 
+# Windows DPAPI decryption
+def _decrypt_with_dpapi(encrypted_data: bytes) -> str:
+	"""Decrypt bytes using Windows DPAPI.
+	Can only be decrypted by the same Windows user account that encrypted it."""
+	import ctypes
+	from ctypes import wintypes
+	
+	class DATA_BLOB(ctypes.Structure):
+		_fields_ = [('cbData', wintypes.DWORD), ('pbData', ctypes.POINTER(ctypes.c_char))]
+	
+	blob_in = DATA_BLOB(len(encrypted_data), ctypes.cast(ctypes.c_char_p(encrypted_data), ctypes.POINTER(ctypes.c_char)))
+	blob_out = DATA_BLOB()
+	
+	if ctypes.windll.crypt32.CryptUnprotectData(
+		ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+	):
+		decrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+		ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+		return decrypted.decode('utf-8')
+	else:
+		raise RuntimeError("Failed to decrypt data with Windows DPAPI")
 
 # -----------------------------
 # Helper function to clean training file strings
@@ -103,13 +124,13 @@ class RobinhoodMarketData:
 		self.timeout = timeout
 
 		if not self.api_key:
-			raise RuntimeError("Robinhood API key is empty (r_key.txt).")
+			raise RuntimeError("Robinhood API key is empty (rh_key.enc).")
 
 		try:
 			raw_private = base64.b64decode((base64_private_key or "").strip())
 			self.private_key = SigningKey(raw_private)
 		except Exception as e:
-			raise RuntimeError(f"Failed to decode Robinhood private key (r_secret.txt): {e}")
+			raise RuntimeError(f"Failed to decode Robinhood private key (rh_secret.enc): {e}")
 
 		self.session = requests.Session()
 
@@ -161,24 +182,37 @@ class RobinhoodMarketData:
 def robinhood_current_ask(symbol: str) -> float:
     """
     Returns Robinhood current BUY price (ask_inclusive_of_buy_spread) for symbols like 'BTC-USD'.
-    Reads creds from r_key.txt and r_secret.txt in the same folder as this script.
+    Reads encrypted creds from rh_key.enc and rh_secret.enc in the same folder as this script.
     """
     global _RH_MD
     if _RH_MD is None:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        key_path = os.path.join(base_dir, "r_key.txt")
-        secret_path = os.path.join(base_dir, "r_secret.txt")
+        key_path = os.path.join(base_dir, "rh_key.enc")
+        secret_path = os.path.join(base_dir, "rh_secret.enc")
 
-        if not os.path.isfile(key_path) or not os.path.isfile(secret_path):
+        api_key = None
+        priv_b64 = None
+        
+        # Read encrypted files
+        try:
+            if os.path.isfile(key_path):
+                with open(key_path, "rb") as f:
+                    api_key = _decrypt_with_dpapi(f.read())
+        except Exception as e:
+            print(f"[Thinker] Warning: Failed to read encrypted API key: {e}")
+        
+        try:
+            if os.path.isfile(secret_path):
+                with open(secret_path, "rb") as f:
+                    priv_b64 = _decrypt_with_dpapi(f.read())
+        except Exception as e:
+            print(f"[Thinker] Warning: Failed to read encrypted private key: {e}")
+
+        if not api_key or not priv_b64:
             raise RuntimeError(
-                "Missing r_key.txt and/or r_secret.txt next to pt_thinker.py. "
-                "Run pt_trader.py once to create them (and to set your Robinhood API key)."
+                "Missing rh_key.enc and/or rh_secret.enc next to pt_thinker.py. "
+                "Open the Hub and go to Settings → Robinhood API → Setup / Update to configure encrypted keys."
             )
-
-        with open(key_path, "r", encoding="utf-8") as f:
-            api_key = f.read()
-        with open(secret_path, "r", encoding="utf-8") as f:
-            priv_b64 = f.read()
 
         _RH_MD = RobinhoodMarketData(api_key=api_key, base64_private_key=priv_b64)
 

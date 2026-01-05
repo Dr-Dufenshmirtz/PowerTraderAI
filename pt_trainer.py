@@ -665,7 +665,9 @@ bounce_accuracy_dict = {}  # Store bounce accuracy for each timeframe
 # designed to be long-running and guarded by small I/O checkpoints so
 # external 'killer' files, status files, or restarts can be coordinated.
 while True:
+	debug_print(f"[DEBUG] TRAINER: Outer loop restart - the_big_index={the_big_index}")
 	# tf_choice is set inside the loop, so we'll add debug at the point where it's known
+	_restart_outer_loop = False  # Flag to break out of nested loops
 	list_len = 0
 	in_trade = 'no'
 	updowncount = 0
@@ -744,6 +746,7 @@ while True:
 	upordown4_3 = []
 	upordown4_4 = []
 	upordown5 = []
+	debug_print(f"[DEBUG] TRAINER: Starting timeframe {tf_choices[the_big_index]} (index {the_big_index}/{len(tf_choices)-1})")
 	tf_choice = tf_choices[the_big_index]
 	debug_print(f"[DEBUG] TRAINER: Starting training cycle for {_arg_coin} on timeframe {tf_choice}...")
 	_mem = load_memory(tf_choice)
@@ -815,21 +818,17 @@ while True:
 			end_date = datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M:%S')
 			
 			debug_print(f"[DEBUG] TRAINER: Fetching historical data from KuCoin...")
-			print(f"API Request: coin={coin_choice}, timeframe={timeframe}")
-			print(f"  Time range: {end_date} to {start_date} ({time_range_days:.1f} days)")
-			print(f"  Timestamps: startAt={end_time}, endAt={start_time}")
+			print(f"Fetching: {end_date} to {start_date} ({time_range_days:.1f} days)")
 			
 			kline_data = market.get_kline(coin_choice,timeframe,startAt=end_time,endAt=start_time)
 			
-			print(f"API Response type: {type(kline_data)}, length: {len(kline_data) if kline_data else 0}")
+			print(f"Received: {len(kline_data) if kline_data else 0} candles")
 			
 			# Validate response format
 			if kline_data:
 				# Check if response is wrapped in {code: ..., data: [...]} format
 				if isinstance(kline_data, dict) and 'data' in kline_data:
-					print(f"Timeframe {timeframe}: Unwrapping KuCoin response wrapper")
 					kline_data = kline_data['data']
-					print(f"After unwrapping - type: {type(kline_data)}, length: {len(kline_data) if kline_data else 0}")
 				
 				# Check if we got empty data - this means we've reached the beginning of available history
 				if not kline_data or len(kline_data) == 0:
@@ -843,7 +842,6 @@ while True:
 					first_entry = kline_data[0]
 					if not isinstance(first_entry, (list, tuple)) or len(first_entry) < 5:
 						raise ValueError(f"Invalid candle format: expected at least 5 fields, got {len(first_entry) if isinstance(first_entry, (list, tuple)) else 'non-list'}")
-					print(f"First candle sample: timestamp={first_entry[0]}, open={first_entry[1]}, close={first_entry[2]}")
 			else:
 				raise ValueError(f"KuCoin returned None/null for {timeframe}")
 			
@@ -901,7 +899,7 @@ while True:
 		
 		perc_comp = format((len(history_list)/how_far_to_look_back)*100,'.2f')
 		print()
-		print('Gathering data...')
+		print(f'Gathering data for {timeframe}...')
 		current_change = len(history_list)-list_len
 		try:
 			if current_change < 1000:
@@ -916,10 +914,6 @@ while True:
 		last_perc_comp = perc_comp
 		start_time = end_time
 		end_time = int(start_time-((1500*timeframe_minutes)*60))
-		print(f'Batch size: {current_change}')
-		print(f'Last training start: {last_start_time}')
-		print(f'Batch end timestamp: {start_time}')
-		print(f'Batch start timestamp: {end_time}')
 		if start_time <= last_start_time:
 			break
 		else:
@@ -1011,9 +1005,9 @@ while True:
 		PrintException()
 	
 	# Debug output before starting training loop
-	print(f"DEBUG: Starting training for {tf_choice} (index {the_big_index}/{len(tf_choices)-1})")
-	print(f"DEBUG: Total candles collected: {len(price_list)}")
-	print(f"DEBUG: Existing memories: {len(memory_list)}")
+	debug_print(f"Starting training for {tf_choice} (index {the_big_index}/{len(tf_choices)-1})")
+	debug_print(f"Total candles collected: {len(price_list)}")
+	debug_print(f"Existing memories: {len(memory_list)}")
 	
 	history_list = []
 	history_list2 = []
@@ -1165,6 +1159,9 @@ while True:
 				pass
 			perfect = []
 			while True:
+				# Check if outer loop restart was requested
+				if _restart_outer_loop:
+					break
 				try:
 					print()
 					print(f'Timeframe: {timeframe}')
@@ -1825,104 +1822,34 @@ while True:
 										
 										# Flush all buffered data before switching to next timeframe
 										debug_print(f"[DEBUG] TRAINER: Flushing buffers before timeframe switch (the_big_index: {the_big_index} -> {the_big_index + 1})")
-										print(f'DEBUG: Memory list size for {tf_choice} before flush: {len(_memory_cache.get(tf_choice, {}).get("memory_list", []))}')
+										debug_print(f'Memory list size for {tf_choice} before flush: {len(_memory_cache.get(tf_choice, {}).get("memory_list", []))}')
 										flush_all_buffers(force=True)
 										
 										# Clear memory cache before switching timeframes to prevent cross-contamination
 										debug_print(f"[DEBUG] TRAINER: Clearing memory cache after flush")
 										_memory_cache.clear()
 										the_big_index += 1
+										debug_print(f'Incremented the_big_index to {the_big_index} (next timeframe will be: {tf_choices[the_big_index] if the_big_index < len(tf_choices) else "DONE"})')
 										print('Moving to next timeframe')
-										print(f'DEBUG: Completed timeframe {tf_choice} - processed {len(price_list2)}/{len(price_list)} candles')
-										avg50 = []
-										sells_count = 0
-										prediction_prices_avg_list = []
-										list_len = 0
-										in_trade = 'no'
-										updowncount1_3 = 0
-										updowncount1_4 = 0
-										high_baseline_price_change_pct = 0.0
-										low_baseline_price_change_pct = 0.0
-										last_flipped = 'no'
-										starting_amounth02 = 100.0
-										starting_amounth05 = 100.0
-										starting_amounth10 = 100.0
-										starting_amounth20 = 100.0
-										starting_amounth50 = 100.0
-										starting_amount = 100.0
-										starting_amount1 = 100.0
-										starting_amount1_2 = 100.0
-										starting_amount1_3 = 100.0
-										starting_amount1_4 = 100.0
-										starting_amount2 = 100.0
-										starting_amount2_2 = 100.0
-										starting_amount2_3 = 100.0
-										starting_amount2_4 = 100.0
-										starting_amount3 = 100.0
-										starting_amount3_2 = 100.0
-										starting_amount3_3 = 100.0
-										starting_amount3_4 = 100.0
-										starting_amount4 = 100.0
-										starting_amount4_2 = 100.0
-										starting_amount4_3 = 100.0
-										starting_amount4_4 = 100.0
-										profit_list = []
-										profit_list1 = []
-										profit_list1_2 = []
-										profit_list1_3 = []
-										profit_list1_4 = []
-										profit_list2 = []
-										profit_list2_2 = []
-										profit_list2_3 = []
-										profit_list2_4 = []
-										profit_list3 = []
-										profit_list3_2 = []
-										profit_list3_3 = []
-										profit_list4 = []
-										profit_list4_2 = []
-										good_hits = []
-										good_preds = []
-										good_preds2 = []
-										good_preds3 = []
-										good_preds4 = []
-										good_preds5 = []
-										good_preds6 = []
-										big_good_preds = []
-										big_good_preds2 = []
-										big_good_preds3 = []
-										big_good_preds4 = []
-										big_good_preds5 = []
-										big_good_preds6 = []
-										big_good_hits = []
-										upordown = []
-										upordown1 = []
-										upordown1_2 = []
-										upordown1_3 = []
-										upordown1_4 = []
-										upordown2 = []
-										upordown2_2 = []
-										upordown2_3 = []
-										upordown2_4 = []
-										upordown3 = []
-										upordown3_2 = []
-										upordown3_3 = []
-										upordown3_4 = []
-										upordown4 = []
-										upordown4_2 = []
-										upordown4_3 = []
-										upordown4_4 = []
-										upordown5 = []
-										how_far_to_look_back = 100000
-										list_len = 0
-										print(f'Timeframe index: {the_big_index}')
-										print(f'Total timeframes: {len(tf_choices)}')
-										print(f'DEBUG: the_big_index={the_big_index}, len(tf_choices)={len(tf_choices)}, len(number_of_candles)={len(number_of_candles)}')
-										print(f'DEBUG: Timeframes in bounce_accuracy_dict: {list(bounce_accuracy_dict.keys())}')
-										# Check if we should continue to next timeframe or exit
+										debug_print(f'Completed timeframe {tf_choice} - processed {len(price_list2)}/{len(price_list)} candles')
+										
+										# Check if we should continue to next timeframe or proceed to exit
 										if the_big_index < len(tf_choices):
-											print(f'DEBUG: Breaking to restart outer loop for next timeframe')
-											break  # Restart outer while True loop with next timeframe
-										# Otherwise, we've processed all timeframes - proceed to exit
+											debug_print(f'More timeframes remain, setting restart flag and breaking to outer loop')
+											_restart_outer_loop = True
+											break  # Exit all the way to outer loop to pick up next timeframe
+										
+										# If the_big_index >= len(tf_choices), fall through to final exit/save logic
+										# NOTE: The ~80 lines of variable resets that were here have been removed.
+										# They were unreachable in multi-timeframe mode (break above executes first)
+										# and pointless before exit (variables reset at outer loop top anyway).
+										
+										# Jump directly to final checks (all variables properly initialized at outer loop)
+										debug_print(f'Timeframe index: {the_big_index}')
+										debug_print(f'Total timeframes: {len(tf_choices)}')
+										debug_print(f'the_big_index={the_big_index}, len(tf_choices)={len(tf_choices)}, len(number_of_candles)={len(number_of_candles)}')
+										debug_print(f'Timeframes in bounce_accuracy_dict: {list(bounce_accuracy_dict.keys())}')
+										# Check if we've processed all timeframes
 										if the_big_index >= len(tf_choices):
 											if len(number_of_candles) == 1:
 												print("Finished processing all timeframes (number_of_candles has only one entry). Exiting.")
@@ -2261,11 +2188,6 @@ while True:
 					history_list = []
 					price_change_list = []
 					current_pattern = []
-					# Only break if finished all timeframes, otherwise continue to next
-					if the_big_index >= len(tf_choices):
-						break
-					else:
-						continue
 				except (KeyboardInterrupt, SystemExit):
 					raise
 				except:
@@ -2273,3 +2195,12 @@ while True:
 					print("CRITICAL ERROR in main training loop. Training cannot continue safely.")
 					mark_training_error("Main training loop critical error")
 					sys.exit(1)
+			# After candle processing loop - check if we need to restart outer loop
+			if _restart_outer_loop:
+				break
+		# After window size loop - check if we need to restart outer loop
+		if _restart_outer_loop:
+			break
+	# After middle loop - check if we need to restart outer loop
+	if _restart_outer_loop:
+		continue

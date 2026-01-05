@@ -42,20 +42,78 @@ import psutil
 # Ensure CREATE_NO_WINDOW is available (added in Python 3.7)
 if not hasattr(subprocess, 'CREATE_NO_WINDOW'):
     subprocess.CREATE_NO_WINDOW = 0x08000000
+
+# Ensure STARTUPINFO flags are available for console hiding
+if not hasattr(subprocess, 'STARTF_USESHOWWINDOW'):
+    subprocess.STARTF_USESHOWWINDOW = 0x00000001
+if not hasattr(subprocess, 'SW_HIDE'):
+    subprocess.SW_HIDE = 0
+
 import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
+import matplotlib
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import FuncFormatter
 from matplotlib.transforms import blended_transform_factory
 
+# Configure matplotlib for crisp text rendering
+matplotlib.rcParams['text.antialiased'] = False
+matplotlib.rcParams['text.hinting'] = 'none'
+matplotlib.rcParams['font.family'] = 'sans-serif'
+matplotlib.rcParams['font.sans-serif'] = ['Segoe UI', 'Arial', 'DejaVu Sans']
+
 # Version: YY.MMDDHH (Year, Month, Day, Hour of last save)
-VERSION = "26.010415"
+VERSION = "26.010423"
+
+# Windows DPAPI encryption helpers
+def _encrypt_with_dpapi(data: str) -> bytes:
+    """Encrypt string using Windows DPAPI (Data Protection API).
+    Returns encrypted bytes that can only be decrypted by this Windows user account."""
+    import ctypes
+    from ctypes import wintypes
+    
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [('cbData', wintypes.DWORD), ('pbData', ctypes.POINTER(ctypes.c_char))]
+    
+    buffer = data.encode('utf-8')
+    blob_in = DATA_BLOB(len(buffer), ctypes.cast(ctypes.c_char_p(buffer), ctypes.POINTER(ctypes.c_char)))
+    blob_out = DATA_BLOB()
+    
+    if ctypes.windll.crypt32.CryptProtectData(
+        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+    ):
+        encrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+        return encrypted
+    else:
+        raise RuntimeError("Failed to encrypt data with Windows DPAPI")
+
+def _decrypt_with_dpapi(encrypted_data: bytes) -> str:
+    """Decrypt bytes using Windows DPAPI.
+    Can only be decrypted by the same Windows user account that encrypted it."""
+    import ctypes
+    from ctypes import wintypes
+    
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [('cbData', wintypes.DWORD), ('pbData', ctypes.POINTER(ctypes.c_char))]
+    
+    blob_in = DATA_BLOB(len(encrypted_data), ctypes.cast(ctypes.c_char_p(encrypted_data), ctypes.POINTER(ctypes.c_char)))
+    blob_out = DATA_BLOB()
+    
+    if ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+    ):
+        decrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+        return decrypted.decode('utf-8')
+    else:
+        raise RuntimeError("Failed to decrypt data with Windows DPAPI")
 
 # Default theme colors (Modern Dark)
 DARK_BG = "#0D1117"
@@ -86,7 +144,7 @@ CHART_ACCOUNT_LINE = "#2196F3"
 LOG_FONT_FAMILY = "Consolas"
 LOG_FONT_SIZE = 8
 CHART_FONT_FAMILY = "Segoe UI"
-CHART_LABEL_FONT_SIZE = 9
+CHART_LABEL_FONT_SIZE = 8
 
 THEME_SETTINGS_FILE = "theme_settings.json"
 
@@ -117,7 +175,7 @@ DEFAULT_THEME = {
     "log_font_family": "Consolas",
     "log_font_size": 8,
     "chart_font_family": "Segoe UI",
-    "chart_label_font_size": 9
+    "chart_label_font_size": 8
 }
 
 def _load_theme_settings():
@@ -1764,6 +1822,18 @@ class ApolloHub(tk.Tk):
         self.title(f"Apollo {VERSION.split('.')[0]}")
         self.geometry("1400x820")
 
+        # Set custom taskbar icon if at.ico exists
+        icon_path = os.path.join(os.path.dirname(__file__), "at.ico")
+        if os.path.isfile(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+                # Set AppUserModelID so Windows shows our icon in taskbar (not Python's)
+                import ctypes
+                myappid = 'apollotrader.cryptoai.26'  # Arbitrary string
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            except Exception:
+                pass  # Silently fail if icon can't be loaded
+
         # Hard minimum window size so the UI can't be shrunk to a point where panes vanish.
         # (Keeps things usable even if someone aggressively resizes.)
         self.minsize(980, 640)
@@ -1832,6 +1902,9 @@ class ApolloHub(tk.Tk):
 
         # On startup (like on Settings-save), create missing alt folders and copy the trainer into them.
         self._ensure_alt_coin_folders_and_trainer_on_startup()
+        
+        # Clear stale training status from interrupted sessions
+        self._clear_stale_training_status()
 
         # Rebuild folder map after potential folder creation
         self.coin_folders = build_coin_folders(self.settings["main_neural_dir"], self.coins)
@@ -2175,6 +2248,32 @@ class ApolloHub(tk.Tk):
                         shutil.copy2(src_trainer_path, dst_trainer_path)
         except Exception:
             pass
+
+    def _clear_stale_training_status(self) -> None:
+        """
+        Clear any trainer_status.json files showing TRAINING state on Hub startup.
+        This prevents showing stale "training" status from interrupted sessions.
+        """
+        try:
+            main_dir = (self.settings.get("main_neural_dir") or self.project_dir or os.getcwd()).strip()
+            coins = [str(c).strip().upper() for c in (self.settings.get("coins") or []) if str(c).strip()]
+            
+            for coin in coins:
+                coin_dir = os.path.join(main_dir, coin)
+                status_file = os.path.join(coin_dir, "trainer_status.json")
+                
+                if os.path.isfile(status_file):
+                    try:
+                        with open(status_file, "r", encoding="utf-8") as f:
+                            status = json.load(f)
+                        
+                        # If status shows TRAINING, clear it (training process isn't actually running)
+                        if status.get("state") == "TRAINING":
+                            os.remove(status_file)
+                    except Exception:
+                        pass  # Ignore errors reading/removing individual status files
+        except Exception:
+            pass  # Don't let startup fail if status cleanup fails
 
     # ---- menu / layout ----
 
@@ -2745,7 +2844,7 @@ class ApolloHub(tk.Tk):
                     target = controls_height + 10
                 except Exception:
                     # Fallback: fixed position for controls + neural tiles
-                    target = 520
+                    target = 500
 
                 target = max(min_top, min(total - min_bottom, target))
                 left_split.sashpos(0, int(target))
@@ -3296,6 +3395,13 @@ class ApolloHub(tk.Tk):
             hide_console = os.environ.get('POWERTRADER_HIDE_CONSOLE', '1') == '1'
             creation_flags = subprocess.CREATE_NO_WINDOW if (sys.platform == "win32" and hide_console) else 0
             
+            # Additional console hiding for Windows using STARTUPINFO
+            startupinfo = None
+            if sys.platform == "win32" and hide_console:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+            
             p.proc = subprocess.Popen(
                 [sys.executable, "-u", p.path],  # -u for unbuffered prints
                 cwd=self.project_dir,
@@ -3307,6 +3413,7 @@ class ApolloHub(tk.Tk):
                 errors="replace",
                 bufsize=1,
                 creationflags=creation_flags,
+                startupinfo=startupinfo,
             )
             if log_q is not None:
                 t = threading.Thread(target=self._reader_thread, args=(p.proc, log_q, prefix), daemon=True)
@@ -3947,6 +4054,7 @@ class ApolloHub(tk.Tk):
                 "trainer_status.json",
                 "trainer_last_start_time.txt",
                 "killer.txt",
+                "bounce_accuracy.txt",
                 "memories_*.dat",
                 "memory_weights_*.dat",
                 "neural_perfect_threshold_*.dat",
@@ -3980,6 +4088,13 @@ class ApolloHub(tk.Tk):
             hide_console = os.environ.get('POWERTRADER_HIDE_CONSOLE', '1') == '1'
             creation_flags = subprocess.CREATE_NO_WINDOW if (sys.platform == "win32" and hide_console) else 0
             
+            # Additional console hiding for Windows using STARTUPINFO
+            startupinfo = None
+            if sys.platform == "win32" and hide_console:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+            
             # Pass `coin` argument so trainer processes the correct market
             info.proc = subprocess.Popen(
                 [sys.executable, "-u", info.path, coin],
@@ -3992,6 +4107,7 @@ class ApolloHub(tk.Tk):
                 errors="replace",
                 bufsize=1,
                 creationflags=creation_flags,
+                startupinfo=startupinfo,
             )
             t = threading.Thread(target=self._reader_thread, args=(info.proc, q, f"[{coin}] "), daemon=True)
             t.start()
@@ -4148,7 +4264,7 @@ class ApolloHub(tk.Tk):
                     msg = f"Bounce Accuracy Results ({coin})\n"
                     msg += f"Last trained: {timestamp}\n"
                     msg += f"Average accuracy: {average}\n"
-                    msg += f"Per timeframe: {', '.join(tf_results)}\n"
+                    msg += f"Per timeframe: {', '.join(tf_results)}\n\n"
                     
                     # Add warning if suspicious accuracy detected
                     if suspicious_accuracy:
@@ -4437,7 +4553,7 @@ class ApolloHub(tk.Tk):
         except Exception:
             pass
 
-        self.status.config(text=f"{_now_str()} | v{VERSION} | main_dir={self.settings['main_neural_dir']}")
+        self.status.config(text=f"{_now_str()}  |  v{VERSION}  |  main_dir={self.settings['main_neural_dir']}")
         self.after(int(float(self.settings.get("ui_refresh_seconds", 1.0)) * 1000), self._tick)
 
     def _refresh_trader_status(self) -> None:
@@ -5285,22 +5401,25 @@ class ApolloHub(tk.Tk):
         add_row(script_frame, script_r, "pt_trainer.py path:", trainer_script_var); script_r += 1
         add_row(script_frame, script_r, "pt_trader.py path:", trader_script_var); script_r += 1
 
-        # --- Robinhood API setup (writes r_key.txt + r_secret.txt used by pt_trader.py) ---
+        # --- Robinhood API setup (writes rh_key.enc + rh_secret.enc using Windows DPAPI encryption) ---
         def _api_paths() -> Tuple[str, str]:
-            key_path = os.path.join(self.project_dir, "r_key.txt")
-            secret_path = os.path.join(self.project_dir, "r_secret.txt")
+            key_path = os.path.join(self.project_dir, "rh_key.enc")
+            secret_path = os.path.join(self.project_dir, "rh_secret.enc")
             return key_path, secret_path
 
         def _read_api_files() -> Tuple[str, str]:
+            """Read and decrypt API keys."""
             key_path, secret_path = _api_paths()
+            
+            # Read encrypted files
             try:
-                with open(key_path, "r", encoding="utf-8") as f:
-                    k = (f.read() or "").strip()
+                with open(key_path, "rb") as f:
+                    k = _decrypt_with_dpapi(f.read()).strip()
             except Exception:
                 k = ""
             try:
-                with open(secret_path, "r", encoding="utf-8") as f:
-                    s = (f.read() or "").strip()
+                with open(secret_path, "rb") as f:
+                    s = _decrypt_with_dpapi(f.read()).strip()
             except Exception:
                 s = ""
             return k, s
@@ -5313,9 +5432,9 @@ class ApolloHub(tk.Tk):
 
             missing = []
             if not k:
-                missing.append("r_key.txt (API Key)")
+                missing.append("rh_key.enc (API Key)")
             if not s:
-                missing.append("r_secret.txt (PRIVATE key)")
+                missing.append("rh_secret.enc (PRIVATE key)")
 
             if missing:
                 api_status_var.set("Not configured ❌ (missing " + ", ".join(missing) + ")")
@@ -5323,7 +5442,7 @@ class ApolloHub(tk.Tk):
                 api_status_var.set("Configured ✅ (credentials found)")
 
         def _open_api_folder() -> None:
-            """Open the folder where r_key.txt / r_secret.txt live."""
+            """Open the folder where rh_key.txt / rh_secret.txt live."""
             try:
                 folder = os.path.abspath(self.project_dir)
                 if os.name == "nt":
@@ -5337,7 +5456,7 @@ class ApolloHub(tk.Tk):
                 messagebox.showerror("Couldn't open folder", f"Tried to open:\n{self.project_dir}\n\nError:\n{e}")
 
         def _clear_api_files() -> None:
-            """Delete r_key.txt / r_secret.txt (with a big confirmation)."""
+            """Delete rh_key.enc / rh_secret.enc (with a big confirmation)."""
             key_path, secret_path = _api_paths()
             if not messagebox.askyesno(
                 "Delete API credentials?",
@@ -5359,15 +5478,15 @@ class ApolloHub(tk.Tk):
                 return
 
             _refresh_api_status()
-            messagebox.showinfo("Deleted", "Deleted r_key.txt and r_secret.txt.")
+            messagebox.showinfo("Deleted", "Deleted rh_key.enc and rh_secret.enc (encrypted API keys).")
 
         def _open_robinhood_api_wizard() -> None:
             """
             Beginner-friendly wizard that creates + stores Robinhood Crypto Trading API credentials.
 
             What we store:
-              - r_key.txt    = your Robinhood *API Key* (safe-ish to store, still treat as sensitive)
-              - r_secret.txt = your *PRIVATE key* (treat like a password — never share it)
+              - rh_key.enc    = your Robinhood *API Key* (encrypted with Windows DPAPI)
+              - rh_secret.enc = your *PRIVATE key* (encrypted, treat like a password — never share it)
             """
             import webbrowser
             import base64
@@ -5532,8 +5651,8 @@ class ApolloHub(tk.Tk):
                 "  H) Click Save. Robinhood shows your API Key — copy it right away (it may only show once).\n\n"
                 "📱 Mobile note: if you can't find API Trading in the app, use robinhood.com in a browser.\n\n"
                 "This wizard will save two files in the same folder as pt_hub.py:\n"
-                "  - r_key.txt    (your API Key)\n"
-                "  - r_secret.txt (your PRIVATE key in base64)  ← keep this secret like a password\n"
+                "  - rh_key.enc    (your API Key, encrypted)\n"
+                "  - rh_secret.enc (your PRIVATE key in base64, encrypted)  ← keep this secret like a password\n"
             )
 
             intro_lbl = ttk.Label(container, text=intro, justify="left")
@@ -5549,7 +5668,7 @@ class ApolloHub(tk.Tk):
 
             ttk.Button(top_btns, text="Open Robinhood API Credentials page (Crypto)", command=open_robinhood_page).pack(side="left")
             ttk.Button(top_btns, text="Open Robinhood Crypto Trading API docs", command=lambda: webbrowser.open("https://docs.robinhood.com/crypto/trading/")).pack(side="left", padx=8)
-            ttk.Button(top_btns, text="Open Folder With r_key.txt / r_secret.txt", command=lambda: _open_in_file_manager(self.project_dir)).pack(side="left", padx=8)
+            ttk.Button(top_btns, text="Open Folder With rh_key.enc / rh_secret.enc", command=lambda: _open_in_file_manager(self.project_dir)).pack(side="left", padx=8)
 
             # -----------------------------
             # Step 1 — Generate keys
@@ -5707,7 +5826,7 @@ class ApolloHub(tk.Tk):
                     pk = ed25519.Ed25519PrivateKey.from_private_bytes(seed)
                     sig_b64 = base64.b64encode(pk.sign(msg)).decode("utf-8")
                 except Exception as e:
-                    messagebox.showerror("Bad private key", f"Couldn't use your private key (r_secret.txt).\n\nError:\n{e}")
+                    messagebox.showerror("Bad private key", f"Couldn't use your private key (rh_secret.enc).\n\nError:\n{e}")
                     return
 
                 headers = {
@@ -5765,7 +5884,7 @@ class ApolloHub(tk.Tk):
             ack_var = tk.BooleanVar(value=False)
             ack = ttk.Checkbutton(
                 step3,
-                text="I understand r_secret.txt is PRIVATE and I will not share it.",
+                text="I understand rh_secret.enc is PRIVATE (encrypted for my Windows account) and I will not share it.",
                 variable=ack_var,
             )
             ack.grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
@@ -5783,7 +5902,7 @@ class ApolloHub(tk.Tk):
 
                 # Normalize private key so pt_thinker.py can load it:
                 # - Accept 32 bytes (seed) OR 64 bytes (seed+pub) from older hub versions
-                # - Save ONLY base64(seed32) to r_secret.txt
+                # - Save ONLY base64(seed32) to rh_secret.txt
                 try:
                     raw = base64.b64decode(priv_b64)
                     if len(raw) == 64:
@@ -5810,7 +5929,7 @@ class ApolloHub(tk.Tk):
                 if not bool(ack_var.get()):
                     messagebox.showwarning(
                         "Please confirm",
-                        "For safety, please check the box confirming you understand r_secret.txt is private."
+                        "For safety, please check the box confirming you understand rh_secret.txt is private."
                     )
                     return
 
@@ -5833,12 +5952,13 @@ class ApolloHub(tk.Tk):
                     pass
 
                 try:
-                    with open(key_path, "w", encoding="utf-8") as f:
-                        f.write(api_key)
-                    with open(secret_path, "w", encoding="utf-8") as f:
-                        f.write(priv_b64)
+                    # Encrypt and save using Windows DPAPI
+                    with open(key_path, "wb") as f:
+                        f.write(_encrypt_with_dpapi(api_key))
+                    with open(secret_path, "wb") as f:
+                        f.write(_encrypt_with_dpapi(priv_b64))
                 except Exception as e:
-                    messagebox.showerror("Save failed", f"Couldn't write the credential files.\n\nError:\n{e}")
+                    messagebox.showerror("Save failed", f"Couldn't write the encrypted credential files.\n\nError:\n{e}")
                     return
 
                 _refresh_api_status()
@@ -6532,16 +6652,36 @@ class ApolloHub(tk.Tk):
         timeframes_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
         timeframes_frame.columnconfigure(0, weight=1)
 
+        # Check current configuration status
+        current_timeframes = cfg.get("timeframes", [])
+        has_all_required = set(current_timeframes) == set(REQUIRED_THINKER_TIMEFRAMES)
+        
+        if has_all_required:
+            status_text = "✓ All 7 required timeframes configured"
+            status_color = "green"
+        else:
+            status_text = f"⚠ Custom configuration: {', '.join(current_timeframes) if current_timeframes else 'none'}"
+            status_color = "orange"
+        
+        # Status indicator
+        status_label = ttk.Label(
+            timeframes_frame,
+            text=status_text,
+            foreground=status_color,
+            font=("TkDefaultFont", 9, "bold")
+        )
+        status_label.grid(row=0, column=0, sticky="w", pady=(0, 5))
+        
         # Timeframes are locked to the 7 required by Thinker
         # Users can manually edit training_settings.json for debugging purposes
         ttk.Label(
             timeframes_frame,
-            text=f"Timeframes (locked): {', '.join(REQUIRED_THINKER_TIMEFRAMES)}\n\n"
+            text=f"Required for Thinker: {', '.join(REQUIRED_THINKER_TIMEFRAMES)}\n\n"
                  "These are the 7 timeframes required by the Thinker for predictions and neural levels.\n"
                  "Advanced users can manually edit training_settings.json to change this for debugging.",
             wraplength=550,
             justify="left"
-        ).grid(row=0, column=0, sticky="w", pady=5)
+        ).grid(row=1, column=0, sticky="w", pady=5)
 
         # Buttons at bottom
         btns_frame = ttk.Frame(frm)

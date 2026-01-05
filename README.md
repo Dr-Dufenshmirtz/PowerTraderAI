@@ -1,7 +1,7 @@
-# PowerTrader_AI
+# ApolloTrader
 Fully automated crypto trading powered by a custom price prediction AI and a structured/tiered DCA system.
 
-**Version:** Enhanced Edition (2025)  
+**Version:** Apollo 26 
 **Features:** Debug mode, simulation mode, configurable themes, enhanced error handling, and comprehensive settings system.
 
 "It's an instance-based (kNN/kernel-style) predictor with online per-instance reliability weighting, used as a multi-timeframe trading signal." - ChatGPT on the type of AI used in this trading bot.
@@ -14,7 +14,7 @@ When training for a coin, it goes through the entire history for that coin on mu
 
 After a candle closes, it checks what happened against what it predicted, and adjusts the weight for each "memory pattern" that was used to generate the weighted average, depending on how accurate each pattern was compared to what actually happened.
 
-Yes, it is EXTREMELY simple. Yes, it is STILL considered AI.
+Yes, it is EXTREMELY simple. Yes, it is STILL AI.
 
 Here is how the trading bot utilizes the price prediction ai to automatically make trades:
 
@@ -26,7 +26,7 @@ For determining when to sell, the bot uses a trailing profit margin to maximize 
 
 # Setup & First-Time Use (Windows)
 
-PowerTrader AI is designed to be easy to set up with minimal technical knowledge required.
+ApolloTrader is designed to be easy to set up with minimal technical knowledge required.
 
 **Important:** This software can place trades automatically. You are responsible for what it does.  
 Keep your API keys private. We are not giving financial advice. We are not responsible for any losses incurred. You are fully responsible for doing your own due diligence to learn and understand this trading system and to use it properly. You are fully responsible for all of your money, and any gains or losses.
@@ -42,24 +42,24 @@ Keep your API keys private. We are not giving financial advice. We are not respo
 
 ---
 
-## Step 2 — Download PowerTraderAI
+## Step 2 — Download ApolloTrader
 
-1. Go to the PowerTrader_AI GitHub repository.
+1. Go to the ApolloTrader GitHub repository.
 2. Click the green **Code** button, then **Download ZIP**.
-3. Extract the ZIP file to a folder on your computer, like: `C:\PowerTraderAI\`
+3. Extract the ZIP file to a folder on your computer, like: `C:\ApolloTrader\`
 
 ---
 
-## Step 3 — Launch PowerTraderAI (One-Click Setup!)
+## Step 3 — Launch ApolloTrader (One-Click Setup!)
 
-1. Navigate to your PowerTraderAI folder.
-2. Double-click **PowerTraderAI.pyw** to launch the hub.
+1. Navigate to your ApolloTrader folder.
+2. Double-click **ApolloTrader.pyw** to launch the hub.
 
-**First Launch:** PowerTraderAI will automatically check if required packages are installed. If not, it will ask permission to install them. Click **Install** and wait a few minutes while it sets everything up. This is a one-time process.
+**First Launch:** ApolloTrader will automatically check if required packages are installed. If not, it will ask permission to install them. Click **Install** and wait a few minutes while it sets everything up. This is a one-time process.
 
 **Note:** Windows may ask for permission to run Python or install packages - this is normal, click Allow/Yes.
 
-The **PowerTraderAI Hub** will open - this is your main control center.
+The **ApolloTrader Hub** will open - this is your main control center.
 
 ---
 
@@ -67,12 +67,12 @@ The **PowerTraderAI Hub** will open - this is your main control center.
 
 ### Initial Setup
 
-On first launch, PowerTraderAI automatically uses the folder where you extracted it as the main directory. You can change this later if needed.
+On first launch, ApolloTrader automatically uses the folder where you extracted it as the main directory. You can change this later if needed.
 
 In the Hub, click **Settings → Hub Settings** and configure:
 
 - **Coins (comma-separated)**: Start with **BTC** for your first run. Add more coins later (ETH, XRP, BNB, DOGE, etc.).
-- **Main neural folder**: Already set to your PowerTraderAI directory by default.
+- **Main neural folder**: Already set to your ApolloTrader directory by default.
 - **Robinhood API**: Click **Setup Wizard** and follow these steps:
   1. Click **Generate Keys**.
   2. Copy the **Public Key** shown in the wizard.
@@ -84,15 +84,15 @@ In the Hub, click **Settings → Hub Settings** and configure:
 
 Click **Save** when done.
 
-After saving, you will have two credential files in your PowerTraderAI folder:  
-`r_key.txt` and `r_secret.txt` - Keep them private and secure!
+After saving, you will have two credential files in your ApolloTrader folder:  
+`rh_key.txt` and `rh_secret.txt` - These are automatically **encrypted for security**. Keep them private and secure!
 
-PowerTraderAI uses a simple folder structure:  
+ApolloTrader uses a simple folder structure:  
 **All coins use their own subfolders** (like `BTC\`, `ETH\`, etc.).
 
 ### Optional: Customize Trading Behavior
 
-PowerTraderAI includes customizable settings so you can tune the bot to your preferences:
+ApolloTrader includes customizable settings so you can tune the bot to your preferences:
 
 **Settings → Trading Settings** - Configure trading parameters:
 - Entry signal thresholds (when to start trades)
@@ -124,9 +124,7 @@ When training is done, click:
 
 1. **Start All**
 
-The Hub will:  
-**start pt_thinker.py**, wait until it is ready, then it will **start pt_trader.py**.  
-You don't need to manually start separate programs. The hub handles everything!
+The Hub will automatically start the Thinker and Trader modules in the correct order. You don't need to manually start separate programs. The hub handles everything!
 
 ---
 
@@ -142,7 +140,7 @@ A TRADE WILL START FOR A COIN IF THAT COIN REACHES A LONG LEVEL OF 3 OR HIGHER W
 
 ## Customizing Trading Behavior
 
-PowerTraderAI allows you to customize trading parameters without editing code:
+Apollo Trader allows you to customize trading parameters without editing code:
 
 ### Trading Settings
 Access via **Settings → Trading Settings** in the Hub menu:
@@ -197,7 +195,7 @@ Simulation mode:
 
 ### Theme Customization
 Customize the Hub's appearance:
-1. Edit `theme_settings.json` in your PowerTraderAI folder
+1. Edit `theme_settings.json` in your Apollo Trader folder
 2. Modify colors for backgrounds, text, charts, and buttons
 3. Reload the Hub to apply changes
 
@@ -280,7 +278,7 @@ All improvements maintain 100% backward compatibility with the original trading 
 
 ## Donate
 
-PowerTraderAI is COMPLETELY free and open source! If you want to support the project:
+Apollo Trader is COMPLETELY free and open source! If you want to support the project:
 
 - Cash App: **$garagesteve**
 - PayPal: **@garagesteve**
@@ -297,4 +295,4 @@ PowerTraderAI is COMPLETELY free and open source! If you want to support the pro
 
 ## License
 
-PowerTraderAI is released under the **Apache 2.0** license.
+Apollo Trader is released under the **Apache 2.0** license.

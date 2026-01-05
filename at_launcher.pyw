@@ -11,7 +11,7 @@ import subprocess
 import time
 
 # Set to True to enable debug logging to launcher_debug.log
-DEBUG = True
+DEBUG = False
 
 # Set to False to show console windows for trainer/thinker/trader (useful for debugging output that doesn't reach logs)
 HIDE_CONSOLE_WINDOWS = True
@@ -24,6 +24,15 @@ def log_debug(message):
             f.write(f"{message}\n")
 
 log_debug("=== Apollo Launcher Starting ===")
+
+# Set Windows AppUserModelID early so taskbar shows our icon (not Python's)
+try:
+    import ctypes
+    myappid = 'apollotrader.cryptoai.26'
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    log_debug(f"Set AppUserModelID: {myappid}")
+except Exception as e:
+    log_debug(f"Failed to set AppUserModelID: {e}")
 
 # Suppress the pkg_resources deprecation warning from kucoin
 warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
@@ -115,7 +124,13 @@ def check_and_install_requirements():
         print("\n" + "="*60)
         print("Apollo Trader - First Time Setup")
         print("="*60)
-        print("\nInstalling required packages:")
+        print(r"""
+    ▀█▀ █▀█   ▀█▀ █ █ █▀▀   █▀▄▀█ █▀█ █▀█ █▄ █ █
+     █  █ █    █  █▀█ ██▄   █ ▀ █ █▄█ █▄█ █ ▀█ ▄
+                       
+        🚀  Crypto Trading AI  🚀
+        """)
+        print("Installing required packages:")
         for pkg in missing_packages:
             print(f"  • {pkg}")
         print("\nThis may take a few moments...\n")

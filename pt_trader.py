@@ -48,6 +48,28 @@ except:
 # third-party
 import requests
 from nacl.signing import SigningKey
+
+# Windows DPAPI decryption
+def _decrypt_with_dpapi(encrypted_data: bytes) -> str:
+	"""Decrypt bytes using Windows DPAPI.
+	Can only be decrypted by the same Windows user account that encrypted it."""
+	import ctypes
+	from ctypes import wintypes
+	
+	class DATA_BLOB(ctypes.Structure):
+		_fields_ = [('cbData', wintypes.DWORD), ('pbData', ctypes.POINTER(ctypes.c_char))]
+	
+	blob_in = DATA_BLOB(len(encrypted_data), ctypes.cast(ctypes.c_char_p(encrypted_data), ctypes.POINTER(ctypes.c_char)))
+	blob_out = DATA_BLOB()
+	
+	if ctypes.windll.crypt32.CryptUnprotectData(
+		ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+	):
+		decrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+		ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+		return decrypted.decode('utf-8')
+	else:
+		raise RuntimeError("Failed to decrypt data with Windows DPAPI")
 import colorama
 from colorama import Fore, Style
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -284,17 +306,29 @@ def _refresh_paths_and_symbols():
 	main_dir = mndir
 	base_paths = _build_base_paths(main_dir, crypto_symbols)
 
-#API STUFF
+#API STUFF - Read encrypted keys
 API_KEY = ""
 BASE64_PRIVATE_KEY = ""
 
+# Read encrypted API credentials
 try:
-    with open('r_key.txt', 'r', encoding='utf-8') as f:
-        API_KEY = (f.read() or "").strip()
-    with open('r_secret.txt', 'r', encoding='utf-8') as f:
-        BASE64_PRIVATE_KEY = (f.read() or "").strip()
-except Exception:
+    if os.path.exists('rh_key.enc'):
+        with open('rh_key.enc', 'rb') as f:
+            API_KEY = _decrypt_with_dpapi(f.read()).strip()
+    else:
+        API_KEY = ""
+except Exception as e:
+    print(f"[PowerTrader] Error reading API key: {e}")
     API_KEY = ""
+
+try:
+    if os.path.exists('rh_secret.enc'):
+        with open('rh_secret.enc', 'rb') as f:
+            BASE64_PRIVATE_KEY = _decrypt_with_dpapi(f.read()).strip()
+    else:
+        BASE64_PRIVATE_KEY = ""
+except Exception as e:
+    print(f"[PowerTrader] Error reading private key: {e}")
     BASE64_PRIVATE_KEY = ""
 
 if not API_KEY or not BASE64_PRIVATE_KEY:
@@ -302,7 +336,7 @@ if not API_KEY or not BASE64_PRIVATE_KEY:
         "\n[PowerTrader] Robinhood API credentials not found.\n"
         "Open the GUI and go to Settings → Robinhood API → Setup / Update.\n"
         "That wizard will generate your keypair, tell you where to paste the public key on Robinhood,\n"
-        "and will save r_key.txt + r_secret.txt so this trader can authenticate.\n"
+        "and will save rh_key.enc + rh_secret.enc (encrypted) so this trader can authenticate.\n"
     )
     raise SystemExit(1)
 
