@@ -1,17 +1,19 @@
 """
-pt_thinker.py
+pt_thinker.py - ApolloTrader AI Prediction Engine
 
 Description:
-This module implements the AI "Thinker" used by PowerTrader. It contains
+This module implements the AI "Thinker" used by ApolloTrader. It contains
 helpers and long-running per-coin stepping logic that fetches market data
 (KuCoin and Robinhood), generates predictions, and exposes utilities used
 by the GUI and runner processes. This file intentionally performs some
 top-level initialization (for example, the KuCoin `Market` client) to
 preserve the original runtime behavior.
 
-Repository: https://github.com/garagesteve1155/PowerTrader_AI
-Author: Stephen Hughes (garagesteve1155)
-Contributors: Dr-Dufenshmirtz
+Primary Repository: https://github.com/Dr-Dufenshmirtz/ApolloTrader
+Primary Author: Dr Dufenshmirtz
+
+Original Project: https://github.com/garagesteve1155/PowerTrader_AI
+Original Author: Stephen Hughes (garagesteve1155)
 
 Notes on AI behavior and trading rules (informational only):
 

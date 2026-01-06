@@ -278,21 +278,38 @@ All improvements maintain 100% backward compatibility with the original trading 
 
 ## Donate
 
-Apollo Trader is COMPLETELY free and open source! If you want to support the project:
+---
 
+## Project Information
+
+**ApolloTrader** is a fork and significant enhancement of the original PowerTrader_AI project.
+
+**Primary Repository:** https://github.com/Dr-Dufenshmirtz/ApolloTrader  
+**Primary Author:** Dr Dufenshmirtz
+
+**Original Project:** https://github.com/garagesteve1155/PowerTrader_AI  
+**Original Author:** Stephen Hughes (garagesteve1155)
+
+This fork includes substantial improvements including:
+- Configurable training parameters via GUI
+- Enhanced error handling and debugging systems
+- Performance optimizations and code cleanup
+- Expanded customization options for trading strategies
+- Improved pattern matching and prediction algorithms
+
+---
+
+## Support
+
+ApolloTrader is COMPLETELY free and open source!
+
+If you'd like to support the **original PowerTrader_AI project**:
 - Cash App: **$garagesteve**
 - PayPal: **@garagesteve**
 - Patreon: **patreon.com/MakingMadeEasy**
 
 ---
 
-## Contributors
-
-- **Stephen Hughes (garagesteve1155)** - Original author and maintainer
-- **Dr-Dufenshmirtz** - Enhanced Edition improvements
-
----
-
 ## License
 
-Apollo Trader is released under the **Apache 2.0** license.
+ApolloTrader is released under the **Apache 2.0** license.

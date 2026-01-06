@@ -1,17 +1,19 @@
 from __future__ import annotations
 """
-pt_hub.py
+pt_hub.py - ApolloTrader Control Hub
 
 Description:
-This module implements the Tkinter GUI hub for PowerTraderAI. It provides
+This module implements the Tkinter GUI hub for ApolloTrader. It provides
 widgets, layout helpers, and the bridge logic that reads/writes hub_data
 files to monitor and control the `trainer`, `thinker`, and `trader`
 processes. The hub displays predicted levels, trade status, and provides
 controls to start/stop components.
 
-Repository: https://github.com/garagesteve1155/PowerTrader_AI
-Author: Stephen Hughes (garagesteve1155)
-Contributors: Dr-Dufenshmirtz
+Primary Repository: https://github.com/Dr-Dufenshmirtz/ApolloTrader
+Primary Author: Dr Dufenshmirtz
+
+Original Project: https://github.com/garagesteve1155/PowerTrader_AI
+Original Author: Stephen Hughes (garagesteve1155)
 
 Relevant behavior notes (informational only):
 
@@ -581,6 +583,15 @@ REQUIRED_THINKER_TIMEFRAMES = [
 DEFAULT_TRAINING_CONFIG = {
     "staleness_days": 14,
     "auto_train_when_stale": True,
+    "bounce_accuracy_tolerance": 0.5,
+    "bounce_accuracy_target": 70.0,
+    "min_pattern_weight": 0.1,
+    "learning_rate": 0.01,
+    "initial_perfect_threshold": 1.0,
+    "perfect_threshold_target": 10.0,
+    "target_matches_small": 10,
+    "target_matches_medium": 15,
+    "target_matches_large": 20,
     "timeframes": REQUIRED_THINKER_TIMEFRAMES
 }
 
@@ -3346,7 +3357,7 @@ class ApolloHub(tk.Tk):
                 print(f"[HUB DEBUG] Reader thread error for {prefix}: {e}")
         finally:
             q.put(f"{prefix}")  # Empty line before process exited
-            q.put(f"{prefix}[process exited]")
+            q.put(f"{prefix}[Process Exited]")
 
     def _is_process_already_running(self, script_name: str) -> bool:
         """Check if a process with the given script name is already running"""
@@ -4412,15 +4423,12 @@ class ApolloHub(tk.Tk):
         # Training overview + per-coin list
         try:
             training_running = [c for c, s in status_map.items() if s == "TRAINING"]
-            not_trained = [c for c, s in status_map.items() if s == "NOT TRAINED"]
-            errored = [c for c, s in status_map.items() if s == "ERROR"]
+            not_trained = [c for c, s in status_map.items() if s in ("NOT TRAINED", "ERROR", "STOPPED")]
 
             if training_running:
                 self.lbl_training_overview.config(text=f"Training: RUNNING ({', '.join(training_running)})")
-            elif errored:
-                self.lbl_training_overview.config(text=f"Training: ERROR ({len(errored)} failed - check logs)")
             elif not_trained:
-                self.lbl_training_overview.config(text=f"Training: REQUIRED ({len(not_trained)} not trained)")
+                self.lbl_training_overview.config(text=f"Training: REQUIRED ({len(not_trained)} need training)")
             else:
                 self.lbl_training_overview.config(text="Training: READY (all trained)")
 
@@ -6233,10 +6241,11 @@ class ApolloHub(tk.Tk):
         frm.columnconfigure(0, weight=0)  # labels
         frm.columnconfigure(1, weight=1)  # entries
 
-        def add_row(parent, r: int, label: str, var: tk.Variable):
+        def add_row(parent, r: int, label: str, var: tk.Variable, explanation: str = ""):
             ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w", padx=(0, 10), pady=6)
-            ent = ttk.Entry(parent, textvariable=var)
-            ent.grid(row=r, column=1, sticky="ew", pady=6)
+            ttk.Entry(parent, textvariable=var, width=15).grid(row=r, column=1, sticky="w", pady=6)
+            if explanation:
+                ttk.Label(parent, text=explanation, foreground="gray").grid(row=r, column=2, sticky="w", padx=(10, 0), pady=6)
 
         r = 0
 
@@ -6260,17 +6269,18 @@ class ApolloHub(tk.Tk):
         for i, level in enumerate(dca_levels):
             dca_level_var = tk.StringVar(value=str(level))
             dca_level_vars.append(dca_level_var)
-            add_row(dca_frame, dca_r, f"DCA Level {i+1} (%):", dca_level_var)
+            expl = "(must be negative, e.g., -2.5)" if i == 0 else ""
+            add_row(dca_frame, dca_r, f"DCA Level {i+1} (%):", dca_level_var, expl)
             dca_r += 1
 
         max_buys_var = tk.StringVar(value=str(cfg.get("dca", {}).get("max_buys_per_window", 2)))
-        add_row(dca_frame, dca_r, "Max DCA buys per window (count):", max_buys_var); dca_r += 1
+        add_row(dca_frame, dca_r, "Max DCA buys per window (count):", max_buys_var, "(limits additional buys)"); dca_r += 1
 
         window_hours_var = tk.StringVar(value=str(cfg.get("dca", {}).get("window_hours", 24)))
-        add_row(dca_frame, dca_r, "Window (hours):", window_hours_var); dca_r += 1
+        add_row(dca_frame, dca_r, "Window (hours):", window_hours_var, "(time window for counting DCA buys)"); dca_r += 1
 
         multiplier_var = tk.StringVar(value=str(cfg.get("dca", {}).get("position_multiplier", 2.0)))
-        add_row(dca_frame, dca_r, "Position multiplier (x):", multiplier_var); dca_r += 1
+        add_row(dca_frame, dca_r, "Position multiplier (x):", multiplier_var, "(each DCA level buys x times more)"); dca_r += 1
 
         # Profit Margin Section
         profit_frame = ttk.LabelFrame(frm, text=" Profit Margin ", padding=15)
@@ -6280,13 +6290,13 @@ class ApolloHub(tk.Tk):
         
         profit_r = 0
         trailing_gap_var = tk.StringVar(value=str(cfg.get("profit_margin", {}).get("trailing_gap_pct", 0.5)))
-        add_row(profit_frame, profit_r, "Trailing gap (%):", trailing_gap_var); profit_r += 1
+        add_row(profit_frame, profit_r, "Trailing gap (%):", trailing_gap_var, "(distance below peak to trigger sell)"); profit_r += 1
 
         target_no_dca_var = tk.StringVar(value=str(cfg.get("profit_margin", {}).get("target_no_dca_pct", 5.0)))
-        add_row(profit_frame, profit_r, "Target without DCA (%):", target_no_dca_var); profit_r += 1
+        add_row(profit_frame, profit_r, "Target without DCA (%):", target_no_dca_var, "(profit target for initial entry only)"); profit_r += 1
 
         target_with_dca_var = tk.StringVar(value=str(cfg.get("profit_margin", {}).get("target_with_dca_pct", 2.5)))
-        add_row(profit_frame, profit_r, "Target with DCA (%):", target_with_dca_var); profit_r += 1
+        add_row(profit_frame, profit_r, "Target with DCA (%):", target_with_dca_var, "(profit target when DCA triggered)"); profit_r += 1
 
         # Entry Signals Section
         entry_frame = ttk.LabelFrame(frm, text=" Entry Signals ", padding=15)
@@ -6296,10 +6306,10 @@ class ApolloHub(tk.Tk):
         
         entry_r = 0
         long_min_var = tk.StringVar(value=str(cfg.get("entry_signals", {}).get("long_signal_min", 3)))
-        add_row(entry_frame, entry_r, "Long signal minimum (1-7):", long_min_var); entry_r += 1
+        add_row(entry_frame, entry_r, "Long signal minimum (1-7):", long_min_var, "(AI signal strength to buy)"); entry_r += 1
 
         short_max_var = tk.StringVar(value=str(cfg.get("entry_signals", {}).get("short_signal_max", 0)))
-        add_row(entry_frame, entry_r, "Short signal maximum (0-7):", short_max_var); entry_r += 1
+        add_row(entry_frame, entry_r, "Short signal maximum (0-7):", short_max_var, "(currently unused - reserved)"); entry_r += 1
 
         # Position Sizing Section
         position_frame = ttk.LabelFrame(frm, text=" Position Sizing ", padding=15)
@@ -6309,10 +6319,10 @@ class ApolloHub(tk.Tk):
         
         position_r = 0
         allocation_var = tk.StringVar(value=str(cfg.get("position_sizing", {}).get("initial_allocation_pct", 0.005)))
-        add_row(position_frame, position_r, "Initial allocation (%):", allocation_var); position_r += 1
+        add_row(position_frame, position_r, "Initial allocation (%):", allocation_var, "(% of account for first buy)"); position_r += 1
 
         min_alloc_var = tk.StringVar(value=str(cfg.get("position_sizing", {}).get("min_allocation_usd", 0.5)))
-        add_row(position_frame, position_r, "Minimum allocation ($):", min_alloc_var); position_r += 1
+        add_row(position_frame, position_r, "Minimum allocation ($):", min_alloc_var, "(floor for position size)"); position_r += 1
 
         # Timing Section
         timing_frame = ttk.LabelFrame(frm, text=" Timing ", padding=15)
@@ -6322,10 +6332,10 @@ class ApolloHub(tk.Tk):
         
         timing_r = 0
         loop_delay_var = tk.StringVar(value=str(cfg.get("timing", {}).get("main_loop_delay_seconds", 0.5)))
-        add_row(timing_frame, timing_r, "Main loop delay (seconds):", loop_delay_var); timing_r += 1
+        add_row(timing_frame, timing_r, "Main loop delay (seconds):", loop_delay_var, "(pause between trade checks)"); timing_r += 1
 
         post_trade_var = tk.StringVar(value=str(cfg.get("timing", {}).get("post_trade_delay_seconds", 5)))
-        add_row(timing_frame, timing_r, "Post-trade delay (seconds):", post_trade_var); timing_r += 1
+        add_row(timing_frame, timing_r, "Post-trade delay (seconds):", post_trade_var, "(cooldown after executing trade)"); timing_r += 1
 
         # Buttons
         btns = ttk.Frame(frm)
@@ -6531,8 +6541,8 @@ class ApolloHub(tk.Tk):
 
         win = tk.Toplevel(self)
         win.title("Training Settings")
-        win.geometry("700x440")
-        win.minsize(650, 400)
+        win.geometry("700x700")
+        win.minsize(650, 600)
         win.configure(bg=DARK_BG)
         win.transient(self)  # Keep dialog on top of parent
         
@@ -6632,8 +6642,7 @@ class ApolloHub(tk.Tk):
         # Staleness threshold
         ttk.Label(general_frame, text="Staleness threshold (days):").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
         staleness_var = tk.StringVar(value=str(cfg.get("staleness_days", 14)))
-        ent = ttk.Entry(general_frame, textvariable=staleness_var)
-        ent.grid(row=0, column=1, sticky="ew", pady=6)
+        ttk.Entry(general_frame, textvariable=staleness_var, width=15).grid(row=0, column=1, sticky="w", pady=6)
 
         ttk.Label(
             general_frame,
@@ -6646,6 +6655,149 @@ class ApolloHub(tk.Tk):
         auto_train_var = tk.BooleanVar(value=bool(cfg.get("auto_train_when_stale", False)))
         chk = ttk.Checkbutton(general_frame, text="Automatically retrain when stale", variable=auto_train_var)
         chk.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 0))
+
+        # Pattern Matching Settings Section
+        pattern_frame = ttk.LabelFrame(frm, text=" Pattern Matching Settings ", padding=15)
+        pattern_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        pattern_frame.columnconfigure(0, weight=0)
+        pattern_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            pattern_frame,
+            text="Target number of similar patterns to find during AI training.\nValues adjust based on pattern library size:",
+            foreground=DARK_FG,
+            wraplength=550,
+            justify="left"
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        # Small library target
+        ttk.Label(pattern_frame, text="Small library target:").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
+        target_small_var = tk.StringVar(value=str(cfg.get("target_matches_small", 10)))
+        ttk.Entry(pattern_frame, textvariable=target_small_var, width=15).grid(row=1, column=1, sticky="w", pady=6)
+        ttk.Label(pattern_frame, text="(< 5,000 patterns)", foreground="gray").grid(row=1, column=2, sticky="w", padx=(10, 0), pady=6)
+
+        # Medium library target
+        ttk.Label(pattern_frame, text="Medium library target:").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=6)
+        target_medium_var = tk.StringVar(value=str(cfg.get("target_matches_medium", 15)))
+        ttk.Entry(pattern_frame, textvariable=target_medium_var, width=15).grid(row=2, column=1, sticky="w", pady=6)
+        ttk.Label(pattern_frame, text="(5,000 - 50,000 patterns)", foreground="gray").grid(row=2, column=2, sticky="w", padx=(10, 0), pady=6)
+
+        # Large library target
+        ttk.Label(pattern_frame, text="Large library target:").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        target_large_var = tk.StringVar(value=str(cfg.get("target_matches_large", 20)))
+        ttk.Entry(pattern_frame, textvariable=target_large_var, width=15).grid(row=3, column=1, sticky="w", pady=6)
+        ttk.Label(pattern_frame, text="(> 50,000 patterns)", foreground="gray").grid(row=3, column=2, sticky="w", padx=(10, 0), pady=6)
+
+        # Accuracy Settings Section
+        accuracy_frame = ttk.LabelFrame(frm, text=" Accuracy Settings ", padding=15)
+        accuracy_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        accuracy_frame.columnconfigure(0, weight=0)
+        accuracy_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            accuracy_frame,
+            text="Controls how strictly the AI evaluates pattern accuracy:",
+            foreground=DARK_FG,
+            wraplength=550
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        # Bounce accuracy target
+        ttk.Label(accuracy_frame, text="Target accuracy (%):").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
+        accuracy_target_var = tk.StringVar(value=str(cfg.get("bounce_accuracy_target", 70.0)))
+        ttk.Entry(accuracy_frame, textvariable=accuracy_target_var, width=15).grid(row=1, column=1, sticky="w", pady=6)
+
+        ttk.Label(
+            accuracy_frame,
+            text="Goal accuracy for pattern quality scoring",
+            foreground=DARK_FG,
+            font=("TkDefaultFont", 8)
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        # Bounce accuracy tolerance
+        ttk.Label(accuracy_frame, text="Accuracy tolerance (± %):").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        accuracy_tolerance_var = tk.StringVar(value=str(cfg.get("bounce_accuracy_tolerance", 0.5)))
+        ttk.Entry(accuracy_frame, textvariable=accuracy_tolerance_var, width=15).grid(row=3, column=1, sticky="w", pady=6)
+
+        ttk.Label(
+            accuracy_frame,
+            text="Allowed variance when checking pattern prediction limits",
+            foreground=DARK_FG,
+            font=("TkDefaultFont", 8)
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 0))
+
+        # Learning Settings Section
+        learning_frame = ttk.LabelFrame(frm, text=" Learning Settings ", padding=15)
+        learning_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        learning_frame.columnconfigure(0, weight=0)
+        learning_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            learning_frame,
+            text="Controls how aggressively the AI adjusts weights during training:",
+            foreground=DARK_FG,
+            wraplength=550
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        # Base learning rate
+        ttk.Label(learning_frame, text="Learning rate:").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
+        learning_rate_var = tk.StringVar(value=str(cfg.get("learning_rate", 0.01)))
+        ttk.Entry(learning_frame, textvariable=learning_rate_var, width=15).grid(row=1, column=1, sticky="w", pady=6)
+
+        ttk.Label(
+            learning_frame,
+            text="Adjustment increment per candle. Smaller = slower but more stable training.",
+            foreground=DARK_FG,
+            font=("TkDefaultFont", 8)
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        # Initial perfect threshold
+        ttk.Label(learning_frame, text="Initial threshold (%):").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        initial_threshold_var = tk.StringVar(value=str(cfg.get("initial_perfect_threshold", 1.0)))
+        ttk.Entry(learning_frame, textvariable=initial_threshold_var, width=15).grid(row=3, column=1, sticky="w", pady=6)
+
+        ttk.Label(
+            learning_frame,
+            text="Starting pattern matching threshold when training begins (e.g., 10.0 = 10%)",
+            foreground=DARK_FG,
+            font=("TkDefaultFont", 8)
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        # Perfect threshold target
+        ttk.Label(learning_frame, text="Target threshold (%):").grid(row=5, column=0, sticky="w", padx=(0, 10), pady=6)
+        threshold_target_var = tk.StringVar(value=str(cfg.get("perfect_threshold_target", 10.0)))
+        ttk.Entry(learning_frame, textvariable=threshold_target_var, width=15).grid(row=5, column=1, sticky="w", pady=6)
+
+        ttk.Label(
+            learning_frame,
+            text="Goal threshold for pattern matching convergence (e.g., 10.0 = 10%)",
+            foreground=DARK_FG,
+            font=("TkDefaultFont", 8)
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 0))
+
+        # Pattern Quality Settings Section
+        quality_frame = ttk.LabelFrame(frm, text=" Pattern Quality Settings ", padding=15)
+        quality_frame.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 15)); r += 1
+        quality_frame.columnconfigure(0, weight=0)
+        quality_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            quality_frame,
+            text="Controls which patterns are kept or discarded:",
+            foreground=DARK_FG,
+            wraplength=550
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        # Minimum pattern weight
+        ttk.Label(quality_frame, text="Minimum pattern weight:").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
+        min_weight_var = tk.StringVar(value=str(cfg.get("min_pattern_weight", 0.1)))
+        ttk.Entry(quality_frame, textvariable=min_weight_var, width=15).grid(row=1, column=1, sticky="w", pady=6)
+
+        ttk.Label(
+            quality_frame,
+            text="Patterns with weights below this threshold are pruned (removed) before saving",
+            foreground=DARK_FG,
+            font=("TkDefaultFont", 8)
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 0))
 
         # Timeframes Section with Checkboxes
         timeframes_frame = ttk.LabelFrame(frm, text=" Allowed Timeframes ", padding=15)
@@ -6689,9 +6841,44 @@ class ApolloHub(tk.Tk):
 
         def save():
             try:
+                # Validate all numeric inputs
                 staleness = int(staleness_var.get())
                 if staleness < 1:
                     messagebox.showerror("Validation Error", "Staleness threshold must be at least 1 day")
+                    return
+                
+                target_small = int(target_small_var.get())
+                target_medium = int(target_medium_var.get())
+                target_large = int(target_large_var.get())
+                if target_small < 1 or target_medium < 1 or target_large < 1:
+                    messagebox.showerror("Validation Error", "Target matches must be at least 1")
+                    return
+                
+                accuracy_target = float(accuracy_target_var.get())
+                accuracy_tolerance = float(accuracy_tolerance_var.get())
+                if accuracy_target < 0 or accuracy_target > 100:
+                    messagebox.showerror("Validation Error", "Target accuracy must be between 0 and 100")
+                    return
+                if accuracy_tolerance < 0:
+                    messagebox.showerror("Validation Error", "Accuracy tolerance must be non-negative")
+                    return
+                
+                learning_rate = float(learning_rate_var.get())
+                initial_threshold = float(initial_threshold_var.get())
+                threshold_target = float(threshold_target_var.get())
+                if learning_rate <= 0:
+                    messagebox.showerror("Validation Error", "Learning rate must be greater than 0")
+                    return
+                if initial_threshold < 0 or initial_threshold > 100:
+                    messagebox.showerror("Validation Error", "Initial threshold must be between 0 and 100")
+                    return
+                if threshold_target < 0 or threshold_target > 100:
+                    messagebox.showerror("Validation Error", "Target threshold must be between 0 and 100")
+                    return
+                
+                min_weight = float(min_weight_var.get())
+                if min_weight < 0 or min_weight > 1:
+                    messagebox.showerror("Validation Error", "Minimum pattern weight must be between 0 and 1")
                     return
                 
                 # Read existing config to preserve timeframes (which may be manually edited)
@@ -6701,6 +6888,15 @@ class ApolloHub(tk.Tk):
                 new_cfg = {
                     "staleness_days": staleness,
                     "auto_train_when_stale": bool(auto_train_var.get()),
+                    "bounce_accuracy_tolerance": accuracy_tolerance,
+                    "bounce_accuracy_target": accuracy_target,
+                    "min_pattern_weight": min_weight,
+                    "learning_rate": learning_rate,
+                    "initial_perfect_threshold": initial_threshold,
+                    "perfect_threshold_target": threshold_target,
+                    "target_matches_small": target_small,
+                    "target_matches_medium": target_medium,
+                    "target_matches_large": target_large,
                     "timeframes": timeframes
                 }
                 _safe_write_json(config_path, new_cfg)
@@ -6710,7 +6906,7 @@ class ApolloHub(tk.Tk):
                 )
                 on_close()
             except ValueError as e:
-                messagebox.showerror("Invalid Input", f"Please enter a valid number for staleness days.\n\n{e}")
+                messagebox.showerror("Invalid Input", f"Please enter valid numbers for all fields.\n\n{e}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save settings:\n{e}")
 
@@ -6722,6 +6918,15 @@ class ApolloHub(tk.Tk):
                 # Reset all fields to defaults
                 staleness_var.set(str(defaults.get("staleness_days", 14)))
                 auto_train_var.set(bool(defaults.get("auto_train_when_stale", False)))
+                target_small_var.set(str(defaults.get("target_matches_small", 10)))
+                target_medium_var.set(str(defaults.get("target_matches_medium", 15)))
+                target_large_var.set(str(defaults.get("target_matches_large", 20)))
+                accuracy_target_var.set(str(defaults.get("bounce_accuracy_target", 70.0)))
+                accuracy_tolerance_var.set(str(defaults.get("bounce_accuracy_tolerance", 0.5)))
+                learning_rate_var.set(str(defaults.get("learning_rate", 0.01)))
+                initial_threshold_var.set(str(defaults.get("initial_perfect_threshold", 1.0)))
+                threshold_target_var.set(str(defaults.get("perfect_threshold_target", 10.0)))
+                min_weight_var.set(str(defaults.get("min_pattern_weight", 0.1)))
                 
                 # Save to file (includes resetting timeframes to required 7)
                 _safe_write_json(config_path, defaults)

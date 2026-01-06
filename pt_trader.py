@@ -1,16 +1,18 @@
 """
-pt_trader.py
+pt_trader.py - ApolloTrader Trading Engine
 
 Description:
-This module implements the live trading component of PowerTraderAI. It
+This module implements the live trading component of ApolloTrader. It
 wraps broker interactions (Robinhood), per-coin state management, DCA and
 trading decision logic, and local GUI persistence (trade history, PnL
 ledger, status). The `CryptoAPITrading` class encapsulates primary
 trading workflows and safety checks used by the GUI.
 
-Repository: https://github.com/garagesteve1155/PowerTrader_AI
-Author: Stephen Hughes (garagesteve1155)
-Contributors: Dr-Dufenshmirtz
+Primary Repository: https://github.com/Dr-Dufenshmirtz/ApolloTrader
+Primary Author: Dr Dufenshmirtz
+
+Original Project: https://github.com/garagesteve1155/PowerTrader_AI
+Original Author: Stephen Hughes (garagesteve1155)
 
 Key behavioral notes (informational only):
 
