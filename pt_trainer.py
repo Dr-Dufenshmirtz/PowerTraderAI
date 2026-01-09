@@ -1123,34 +1123,34 @@ while True:
 			# Append ALL missing elements if window grew (avoids recalculation = O(n) instead of O(n²))
 			while len(price_list2) > len(price_change_list):
 				new_index = len(price_change_list)
-				if new_index < len(price_list2) and new_index < len(open_price_list2):
-					# Protect against division by zero (corrupted data with zero open price)
-					if open_price_list2[new_index] != 0:
-						price_change = 100*((price_list2[new_index]-open_price_list2[new_index])/open_price_list2[new_index])
+				if new_index < len(price_list2):
+					# Calculate close-to-close returns for proper volatility measurement
+					if new_index > 0 and price_list2[new_index-1] != 0:
+						price_change = 100*((price_list2[new_index]-price_list2[new_index-1])/price_list2[new_index-1])
 					else:
-						price_change = 0.0
+						price_change = 0.0  # First candle or division by zero
 					price_change_list.append(price_change)
 					debug_print(f"[DEBUG] TRAINER: Added price_change[{new_index}] = {price_change:.4f}")
 			
 			while len(high_price_list2) > len(high_price_change_list):
 				new_index = len(high_price_change_list)
-				if new_index < len(high_price_list2) and new_index < len(open_price_list2):
-					# Protect against division by zero (corrupted data with zero open price)
-					if open_price_list2[new_index] != 0:
-						high_price_change = 100*((high_price_list2[new_index]-open_price_list2[new_index])/open_price_list2[new_index])
+				if new_index < len(high_price_list2):
+					# Calculate close-to-close returns for proper volatility measurement
+					if new_index > 0 and high_price_list2[new_index-1] != 0:
+						high_price_change = 100*((high_price_list2[new_index]-high_price_list2[new_index-1])/high_price_list2[new_index-1])
 					else:
-						high_price_change = 0.0
+						high_price_change = 0.0  # First candle or division by zero
 					high_price_change_list.append(high_price_change)
 					debug_print(f"[DEBUG] TRAINER: Added high_price_change[{new_index}] = {high_price_change:.4f}")
 			
 			while len(low_price_list2) > len(low_price_change_list):
 				new_index = len(low_price_change_list)
-				if new_index < len(low_price_list2) and new_index < len(open_price_list2):
-					# Protect against division by zero (corrupted data with zero open price)
-					if open_price_list2[new_index] != 0:
-						low_price_change = 100*((low_price_list2[new_index]-open_price_list2[new_index])/open_price_list2[new_index])
+				if new_index < len(low_price_list2):
+					# Calculate close-to-close returns for proper volatility measurement
+					if new_index > 0 and low_price_list2[new_index-1] != 0:
+						low_price_change = 100*((low_price_list2[new_index]-low_price_list2[new_index-1])/low_price_list2[new_index-1])
 					else:
-						low_price_change = 0.0
+						low_price_change = 0.0  # First candle or division by zero
 					low_price_change_list.append(low_price_change)
 					debug_print(f"[DEBUG] TRAINER: Added low_price_change[{new_index}] = {low_price_change:.4f}")
 			
@@ -1533,6 +1533,9 @@ while True:
 					# Effective bounds are the stricter of volatility-based or user-configured values
 					effective_min = max(min_threshold, adaptive_min_threshold)
 					effective_max = min(max_threshold, adaptive_max_threshold)
+					# Safeguard: ensure max >= min (can occur in very low volatility)
+					if effective_max < effective_min:
+						effective_max = effective_min
 					perfect_threshold = max(effective_min, min(effective_max, perfect_threshold))
 					
 					# Status output
