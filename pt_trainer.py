@@ -1454,9 +1454,9 @@ while True:
 					# Adaptive threshold bounds based on market volatility
 					# Low volatility → tighter bounds (more precise matching)
 					# High volatility → wider bounds (accommodate market noise)
-					# Formula: min = max(1.0, 0.5×volatility), max = min(50.0, 2.0×volatility)
-					adaptive_min_threshold = max(1.0, 0.5 * avg_volatility)
-					adaptive_max_threshold = min(50.0, 2.0 * avg_volatility)
+					# Formula: min = max(min_threshold, 1.0×volatility), max = min(max_threshold, 4.0×volatility)
+					adaptive_min_threshold = max(min_threshold, 1.0 * avg_volatility)
+					adaptive_max_threshold = min(max_threshold, 4.0 * avg_volatility)
 					debug_print(f"[DEBUG] TRAINER: Adaptive bounds = [{adaptive_min_threshold:.2f}, {adaptive_max_threshold:.2f}] (volatility-scaled)")
 					
 					# Volatility-adaptive k-selection using √N formula
@@ -1843,13 +1843,13 @@ while True:
 									
 									# Determine trend arrow by comparing to last PRINTED accuracy (not last candle)
 									if last_printed_accuracy is None:
-										trend_arrow = "●"  # First print, starting point
+										trend_arrow = "*"  # First print, starting point
 									elif accuracy > last_printed_accuracy + adaptive_threshold:
-										trend_arrow = "↑"
+										trend_arrow = "+"
 									elif accuracy < last_printed_accuracy - adaptive_threshold:
-										trend_arrow = "↓"
+										trend_arrow = "-"
 									else:
-										trend_arrow = "→"  # No significant change
+										trend_arrow = "="  # No significant change
 									
 									formatted = format(accuracy, '.2f').rstrip('0').rstrip('.')
 									limit_test_count = len(upordown4)

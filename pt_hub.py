@@ -589,7 +589,7 @@ DEFAULT_TRAINING_CONFIG = {
     "pid_ki": 0.005,
     "pid_kd": 0.2,
     "pid_integral_limit": 20,
-    "min_threshold": 1.0,
+    "min_threshold": 5.0,
     "max_threshold": 25.0,
     "pattern_size": 3,
     "weight_base_step": 0.25,
@@ -6930,7 +6930,7 @@ class ApolloHub(tk.Tk):
 
         # Minimum threshold
         ttk.Label(learning_frame, text="Min threshold (%):").grid(row=8, column=0, sticky="w", padx=(0, 10), pady=6)
-        min_threshold_var = tk.StringVar(value=str(cfg.get("min_threshold", 1.0)))
+        min_threshold_var = tk.StringVar(value=str(cfg.get("min_threshold", 5.0)))
         ttk.Entry(learning_frame, textvariable=min_threshold_var, width=15).grid(row=8, column=1, sticky="w", pady=6)
 
         ttk.Label(
@@ -7321,7 +7321,7 @@ class ApolloHub(tk.Tk):
                 pid_ki_var.set(str(defaults.get("pid_ki", 0.01)))
                 pid_kd_var.set(str(defaults.get("pid_kd", 0.02)))
                 pid_limit_var.set(str(defaults.get("pid_integral_limit", 0.5)))
-                min_threshold_var.set(str(defaults.get("min_threshold", 1.0)))
+                min_threshold_var.set(str(defaults.get("min_threshold", 5.0)))
                 max_threshold_var.set(str(defaults.get("max_threshold", 25.0)))
                 pruning_sigma_var.set(str(defaults.get("pruning_sigma_level", 2.0)))
                 pattern_size_var.set(str(defaults.get("pattern_size", 3)))
