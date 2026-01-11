@@ -601,7 +601,7 @@ DEFAULT_TRAINING_CONFIG = {
     "pid_integral_limit": 20,
     "min_threshold": 5.0,
     "max_threshold": 25.0,
-    "pattern_size": 5,
+    "pattern_size": 4,
     "weight_base_step": 0.25,
     "weight_step_cap_multiplier": 2.0,
     "weight_threshold_base": 0.1,
@@ -8119,7 +8119,7 @@ class ApolloHub(tk.Tk):
 
         # Pattern size (moved from Pattern Quality)
         ttk.Label(learning_frame, text="Pattern size (candles):").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
-        pattern_size_var = tk.StringVar(value=str(cfg.get("pattern_size", 5)))
+        pattern_size_var = tk.StringVar(value=str(cfg.get("pattern_size", 4)))
         ttk.Entry(learning_frame, textvariable=pattern_size_var, width=15).grid(row=0, column=1, sticky="w", pady=6)
 
         ttk.Label(
@@ -8495,7 +8495,7 @@ class ApolloHub(tk.Tk):
                 # Read existing config to preserve timeframes and check for pattern_size change
                 existing_cfg = _safe_read_json(config_path) if os.path.isfile(config_path) else {}
                 timeframes = existing_cfg.get("timeframes", REQUIRED_THINKER_TIMEFRAMES)
-                old_pattern_size = existing_cfg.get("pattern_size", 5)
+                old_pattern_size = existing_cfg.get("pattern_size", 4)
                 
                 # Warn if pattern_size changed (requires retraining)
                 if pattern_size != old_pattern_size:
@@ -8559,7 +8559,7 @@ class ApolloHub(tk.Tk):
                 min_threshold_var.set(str(defaults.get("min_threshold", 5.0)))
                 max_threshold_var.set(str(defaults.get("max_threshold", 25.0)))
                 pruning_sigma_var.set(str(defaults.get("pruning_sigma_level", 2.0)))
-                pattern_size_var.set(str(defaults.get("pattern_size", 3)))
+                pattern_size_var.set(str(defaults.get("pattern_size", 4)))
                 weight_base_step_var.set(str(defaults.get("weight_base_step", 0.25)))
                 weight_step_cap_var.set(str(defaults.get("weight_step_cap_multiplier", 2.0)))
                 weight_threshold_base_var.set(str(defaults.get("weight_threshold_base", 0.1)))

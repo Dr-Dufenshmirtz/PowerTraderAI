@@ -600,7 +600,7 @@ tf_minutes = [tf_minutes_map.get(tf, 60) for tf in tf_choices]
 
 # Load training parameter settings with defaults
 pruning_sigma_level = training_settings.get("pruning_sigma_level", 2.0) if os.path.isfile(import_path) else 2.0
-min_threshold = training_settings.get("min_threshold", 1.0) if os.path.isfile(import_path) else 1.0
+min_threshold = training_settings.get("min_threshold", 5.0) if os.path.isfile(import_path) else 5.0
 max_threshold = training_settings.get("max_threshold", 25.0) if os.path.isfile(import_path) else 25.0
 pattern_size = training_settings.get("pattern_size", 4) if os.path.isfile(import_path) else 4
 
