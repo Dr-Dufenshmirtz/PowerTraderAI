@@ -5918,13 +5918,18 @@ class ApolloHub(tk.Tk):
             alloc_pct = trading_cfg.get("position_sizing", {}).get("initial_allocation_pct", 0.005)
             min_alloc = trading_cfg.get("position_sizing", {}).get("min_allocation_usd", 0.5)
             multiplier = trading_cfg.get("dca", {}).get("position_multiplier", 2.0)
+            max_concurrent = trading_cfg.get("position_sizing", {}).get("max_concurrent_positions", 3)
+            
+            # Use max_concurrent_positions instead of total coins for spread calculation
+            # since not all coins can be active simultaneously
+            n_spread = min(n, max_concurrent) if max_concurrent > 0 else n
 
             spread_levels = 0
             single_levels = 0
 
             if total_val > 0.0:
-                # Spread across all coins
-                alloc_spread = total_val * (alloc_pct / n)
+                # Spread across max concurrent positions (not all coins)
+                alloc_spread = total_val * (alloc_pct / n_spread)
                 if alloc_spread < min_alloc:
                     alloc_spread = min_alloc
 
