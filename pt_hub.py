@@ -140,8 +140,8 @@ CHART_NEURAL_LONG = "#00E5FF"
 CHART_NEURAL_SHORT = "#FFD54F"
 CHART_SELL_LINE = "#00E676"
 CHART_DCA_LINE = "#FF4081"
-CHART_ASK_LINE = "#9C27B0"
-CHART_BID_LINE = "#00BCD4"
+CHART_ASK_LINE = "#FFD54F"
+CHART_BID_LINE = "#00E5FF"
 CHART_ACCOUNT_LINE = "#00E5FF"
 
 # Font settings (Modern Segoe UI)
@@ -552,7 +552,7 @@ TRAINING_SETTINGS_FILE = "training_settings.json"
 # Default trading config
 DEFAULT_TRADING_CONFIG = {
     "dca": {
-        "levels": [-2.5, -5.0, -10.0, -20.0, -40.0],
+        "levels": [-2.5, -5.0, -10.0, -20.0],
         "max_buys_per_window": 2,
         "window_hours": 24,
         "position_multiplier": 2.0
@@ -561,7 +561,7 @@ DEFAULT_TRADING_CONFIG = {
         "trailing_gap_pct": 0.5,
         "target_no_dca_pct": 5.0,
         "target_with_dca_pct": 2.5,
-        "stop_loss_pct": -50.0
+        "stop_loss_pct": -40.0
     },
     "entry_signals": {
         "long_signal_min": 4,
@@ -574,7 +574,7 @@ DEFAULT_TRADING_CONFIG = {
     },
     "timing": {
         "main_loop_delay_seconds": 0.5,
-        "post_trade_delay_seconds": 5
+        "post_trade_delay_seconds": 30
     }
 }
 
@@ -815,7 +815,7 @@ def build_coin_folders(main_dir: str, coins: List[str]) -> Dict[str, str]:
 
 def read_price_levels_from_html(path: str) -> List[Tuple[str, float]]:
     """
-    pt_thinker writes labeled boundaries into low_bound_prices.html / high_bound_prices.html.
+    pt_thinker writes labeled boundaries into low_bound_prices.txt / high_bound_prices.txt.
 
     Format: "1h:43210.1 2h:43100.0 4h:42950.5"
 
@@ -1061,8 +1061,17 @@ class CandleChart(ttk.Frame):
         self.neural_status_label = ttk.Label(top, text="Neural: N/A")
         self.neural_status_label.pack(side="left", padx=(12, 0))
 
-        self.last_update_label = ttk.Label(top, text="Last: N/A")
+        self.last_update_label = ttk.Label(top, text="Last neurals: N/A")
         self.last_update_label.pack(side="right")
+        
+        # Priority alert label (shown when coin is close to trigger point)
+        self.priority_alert_label = ttk.Label(
+            top,
+            text="",
+            font=("Segoe UI", 10, "bold"),
+            foreground="#FF6B00"  # Orange color for visibility
+        )
+        self.priority_alert_label.pack(side="right", padx=(0, 12))
 
         # Figure
         # IMPORTANT: keep a stable DPI and resize the figure to the widget's pixel size.
@@ -1071,10 +1080,9 @@ class CandleChart(ttk.Frame):
         self.fig = Figure(figsize=(6.5, 3.5), dpi=100)
         self.fig.patch.set_facecolor(DARK_BG)
 
-        # Reserve bottom space so date+time x tick labels are always visible
-        # Also reserve right space so the price labels (Bid/Ask/DCA/Sell) can sit outside the plot.
-        # Also reserve a bit of top space so the title never gets clipped.
-        self.fig.subplots_adjust(left=0.09, bottom=0.18, right=0.91, top=0.92)
+        # CandleChart padding: Reserve bottom space for date+time x tick labels,
+        # right space for price labels (Bid/Ask/DCA/Sell), and top space for title.
+        self.fig.subplots_adjust(left=0.08, bottom=0.15, right=0.88, top=0.94)
 
         self.ax = self.fig.add_subplot(111)
         self._apply_dark_chart_style()
@@ -1151,8 +1159,8 @@ class CandleChart(ttk.Frame):
         candles = self.fetcher.get_klines(self.coin, tf, limit=limit)
 
         folder = coin_folders.get(self.coin, "")
-        low_path = os.path.join(folder, "low_bound_prices.html")
-        high_path = os.path.join(folder, "high_bound_prices.html")
+        low_path = os.path.join(folder, "low_bound_prices.txt")
+        high_path = os.path.join(folder, "high_bound_prices.txt")
 
         # --- Cached neural reads (per path, by mtime) ---
         if not hasattr(self, "_neural_cache"):
@@ -1296,7 +1304,7 @@ class CandleChart(ttk.Frame):
             y_pad = max((y1 - y0) * 0.012, 1e-9)
             y_box_pad = y_pad * 3.0  # Boxes need 3x more space
 
-            def _label_right(y: Optional[float], tag: str, color: str) -> None:
+            def _label_right(y: Optional[float], tag: str, color: str, fill_color: Optional[str] = None) -> None:
                 if y is None:
                     return
                 try:
@@ -1324,7 +1332,7 @@ class CandleChart(ttk.Frame):
                     fontfamily=CHART_FONT_FAMILY,
                     color=color,
                     bbox=dict(
-                        facecolor=DARK_BG2,
+                        facecolor=fill_color if fill_color else DARK_BG2,
                         edgecolor=color,
                         boxstyle="square,pad=0.3",
                         alpha=1.0,
@@ -1334,7 +1342,7 @@ class CandleChart(ttk.Frame):
                 )
 
             def _label_neural(y: Optional[float], tag: str, color: str) -> None:
-                """Label for neural levels - no box, only show if visible on chart"""
+                """Label for neural levels - no box, only show if visible on chart and no overlap"""
                 if y is None:
                     return
                 try:
@@ -1347,17 +1355,18 @@ class CandleChart(ttk.Frame):
                 except Exception:
                     return
 
-                # Use larger padding when near boxed labels (they take more vertical space)
+                # Check if this label would overlap with existing labels - if so, skip it
                 for prev in used_y:
                     pad_to_use = y_box_pad if prev in boxed_y else y_pad
                     if abs(yy - prev) < pad_to_use:
-                        yy = prev + pad_to_use
+                        return  # Skip this label to avoid overlap
+                
                 used_y.append(yy)
 
                 self.ax.text(
                     1.01,
                     yy,
-                    f"{tag} {_fmt_price(yy)}",
+                    tag,
                     transform=trans,
                     ha="left",
                     va="center",
@@ -1512,7 +1521,7 @@ class CandleChart(ttk.Frame):
 
         self.canvas.draw_idle()
 
-        self.neural_status_label.config(text=f"Neural: long={long_sig} short={short_sig} | levels L={len(long_levels_labeled)} S={len(short_levels_labeled)}")
+        self.neural_status_label.config(text=f"Neural: long = {long_sig}/{len(long_levels_labeled)}  short = {short_sig}/{len(short_levels_labeled)}")
 
         # show file update time if possible
         last_ts = None
@@ -1525,9 +1534,9 @@ class CandleChart(ttk.Frame):
             last_ts = None
 
         if last_ts:
-            self.last_update_label.config(text=f"Last: {time.strftime('%H:%M:%S', time.localtime(last_ts))}")
+            self.last_update_label.config(text=f"Last neurals: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_ts))}")
         else:
-            self.last_update_label.config(text="Last: N/A")
+            self.last_update_label.config(text="Last neurals: N/A")
 
 # Account value chart widget for displaying account value over time with trade markers
 class AccountValueChart(ttk.Frame):
@@ -1582,16 +1591,24 @@ class AccountValueChart(ttk.Frame):
         top.pack(fill="x", padx=6, pady=6)
 
         ttk.Label(top, text="Account value").pack(side="left")
-        self.last_update_label = ttk.Label(top, text="Last: N/A")
+        self.last_update_label = ttk.Label(top, text="Last status: N/A")
         self.last_update_label.pack(side="right")
+        
+        # Priority alert label (shown when coin is close to trigger point)
+        self.priority_alert_label = ttk.Label(
+            top,
+            text="",
+            font=("Segoe UI", 10, "bold"),
+            foreground="#FF6B00"  # Orange color for visibility
+        )
+        self.priority_alert_label.pack(side="right", padx=(0, 12))
 
         self.fig = Figure(figsize=(6.5, 3.5), dpi=100)
         self.fig.patch.set_facecolor(DARK_BG)
 
-        # Reserve bottom space so date+time x tick labels are always visible
-        # Also reserve right space so the price labels (Bid/Ask/DCA/Sell) can sit outside the plot.
-        # Also reserve a bit of top space so the title never gets clipped.
-        self.fig.subplots_adjust(left=0.09, bottom=0.18, right=0.88, top=0.92)
+        # AccountValueChart padding: Reserve bottom space for date+time x tick labels,
+        # right space for price labels, and top space for title.
+        self.fig.subplots_adjust(left=0.08, bottom=0.15, right=0.94, top=0.94)
 
         self.ax = self.fig.add_subplot(111)
         self._apply_dark_chart_style()
@@ -1692,7 +1709,7 @@ class AccountValueChart(ttk.Frame):
         """
         path = self.history_path
 
-        # === Mtime-Based Cache Check ===
+        # Mtime-Based Cache Check
         # Only redraw if account history OR trade history files have changed
         # This prevents expensive matplotlib redraws when no new data exists
         try:
@@ -1714,7 +1731,7 @@ class AccountValueChart(ttk.Frame):
             return
         self._last_mtime = mtime
 
-        # === Data Loading ===
+        # Data Loading
         # Load all account value history points (timestamp, value) tuples
         points: List[Tuple[float, float]] = []
 
@@ -1802,7 +1819,7 @@ class AccountValueChart(ttk.Frame):
 
         if not points:
             self.ax.set_title("Account Value - no data", color=DARK_FG, fontsize=CHART_LABEL_FONT_SIZE, fontfamily=CHART_FONT_FAMILY)
-            self.last_update_label.config(text="Last: N/A")
+            self.last_update_label.config(text="Last status: N/A")
             self.canvas.draw_idle()
             return
 
@@ -1909,7 +1926,7 @@ class AccountValueChart(ttk.Frame):
                 last = i
 
         tick_x = [xs[i] for i in idxs]
-        tick_lbl = [time.strftime("%Y-%m-%d\n%H:%M:%S", time.localtime(points[i][0])) for i in idxs]
+        tick_lbl = [time.strftime("%Y-%m-%d\n%H:%M", time.localtime(points[i][0])) for i in idxs]
         try:
             self.ax.minorticks_off()
             self.ax.set_xticks(tick_x)
@@ -1928,10 +1945,10 @@ class AccountValueChart(ttk.Frame):
 
         try:
             self.last_update_label.config(
-                text=f"Last: {time.strftime('%H:%M:%S', time.localtime(points[-1][0]))}"
+                text=f"Last status: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(points[-1][0]))}"
             )
         except Exception:
-            self.last_update_label.config(text="Last: N/A")
+            self.last_update_label.config(text="Last status: N/A")
 
         self.canvas.draw_idle()
 
@@ -1987,7 +2004,28 @@ class ApolloHub(tk.Tk):
         """
         super().__init__()
         self.title(f"Apollo Trader {VERSION.split('.')[0]}")
-        self.geometry("1400x820")
+        
+        # Set initial size and ensure window opens within visible screen area
+        win_width = 1400
+        win_height = 820
+        
+        # Get screen dimensions
+        try:
+            screen_width = self.winfo_screenwidth()
+            screen_height = self.winfo_screenheight()
+            
+            # Clamp window size to screen if needed (leave 50px margin)
+            actual_width = min(win_width, screen_width - 50)
+            actual_height = min(win_height, screen_height - 50)
+            
+            # Center window on screen
+            x = max(0, (screen_width - actual_width) * 2 // 3)
+            y = max(0, (screen_height - actual_height) // 3)
+            
+            self.geometry(f"{actual_width}x{actual_height}+{x}+{y}")
+        except Exception:
+            # Fallback to simple geometry without position
+            self.geometry("1400x820")
 
         # Set custom taskbar icon if at.ico exists in project directory
         # This gives the app a professional appearance in Windows taskbar
@@ -2007,7 +2045,7 @@ class ApolloHub(tk.Tk):
         # These dimensions ensure all panels remain visible and functional
         self.minsize(980, 640)
         
-        # === Menu Checkbox Variables ===
+        # Menu Checkbox Variables
         # These BooleanVars are bound to menu checkboxes and persist to gui_settings.json
         
         # Auto-start: Launches thinker/trader automatically when Hub opens
@@ -2019,12 +2057,12 @@ class ApolloHub(tk.Tk):
         # Simulation mode: Prevents real trades (testing/development safety)
         self.simulation_mode_var = tk.BooleanVar()
 
-        # === UI Performance ===
+        # UI Performance
         # Debounce map prevents rapid-fire panedwindow resize events from causing lag
         # Keys are pane widget IDs, values are after() callback IDs for cancellation
         self._paned_clamp_after_ids: Dict[str, str] = {}
 
-        # === Configuration Loading ===
+        # Configuration Loading
         # Load user settings from gui_settings.json (coins, directories, API keys, etc.)
         self.settings = self._load_settings()
         
@@ -2036,7 +2074,7 @@ class ApolloHub(tk.Tk):
         # Must run after theme load to respect custom color schemes
         self._apply_forced_dark_mode()
 
-        # === Directory Structure ===
+        # Directory Structure
         # Project directory: Location of pt_hub.py (base for relative paths)
         self.project_dir = os.path.abspath(os.path.dirname(__file__))
 
@@ -2046,7 +2084,7 @@ class ApolloHub(tk.Tk):
         self.hub_dir = os.path.abspath(hub_dir)
         _ensure_dir(self.hub_dir)
 
-        # === Inter-Process Communication Files ===
+        # Inter-Process Communication Files
         # These files are the primary data exchange mechanism between Hub and subprocesses
         
         # Written by pt_trader.py - Account status and open positions
@@ -2066,26 +2104,26 @@ class ApolloHub(tk.Tk):
         # Used by "Start All" to coordinate thinker → trader startup sequence
         self.runner_ready_path = os.path.join(self.hub_dir, "runner_ready.json")
 
-        # === Startup Coordination State ===
+        # Startup Coordination State
         # When "Start All" is clicked, Hub starts thinker first, then waits for runner_ready.json
         # before starting trader. This flag tracks whether trader is waiting for thinker.
         self._auto_start_trader_pending = False
 
-        # === Autopilot Mode State ===
+        # Autopilot Mode State
         # Autopilot orchestrates: auto-train untrained coins → start thinker → start trader
         # This provides a "one-click" experience for first-time users
         self._auto_mode_active = False          # Currently in Autopilot workflow
         self._auto_mode_phase = ""              # Current phase: "training", "thinking", "trading"
         self._auto_mode_pending_coins: set = set()  # Coins waiting for training to complete
 
-        # === Auto-Retrain State (Proactive Training) ===
+        # Auto-Retrain State (Proactive Training)
         # Monitors training data staleness and auto-retrains before it becomes critical
         # Prevents thinker/trader from using expired AI memory patterns
         self._auto_retraining_active = False       # Currently in auto-retrain workflow
         self._auto_retrain_pending_coins: set = set()  # Coins being retrained
         self._last_auto_retrain_check = 0.0       # Timestamp of last staleness check
 
-        # === Live Trading State Cache ===
+        # Live Trading State Cache
         # Stores most recent position data for each coin to overlay on charts
         # Format: {coin: {current_buy_price, current_sell_price, trail_line, dca_line_price}}
         self._last_positions: Dict[str, dict] = {}
@@ -2094,7 +2132,7 @@ class ApolloHub(tk.Tk):
         self._cached_trading_config: Optional[dict] = None
         self._cached_trading_config_mtime: Optional[float] = None
 
-        # === Auto-Switch State ===
+        # Auto-Switch State
         # Tracks manual chart switches to prevent auto-switch from overriding user intent
         # Auto-switch pauses for 2 minutes after manual selection
         self._last_manual_chart_switch: float = 0.0  # Timestamp of last manual chart selection
@@ -2570,7 +2608,7 @@ class ApolloHub(tk.Tk):
             activeforeground=DARK_SELECT_FG,
             selectcolor=DARK_FG,
         )
-        m_scripts.add_command(label="🚀 Autopilot", command=self.start_all_scripts)
+        m_scripts.add_command(label="🚀 Engage Autopilot", command=self.start_all_scripts)
         m_scripts.add_command(label="Stop All", command=self.stop_all_scripts)
         m_scripts.add_separator()
         m_scripts.add_command(label="Start Thinker", command=self.start_neural)
@@ -2580,7 +2618,7 @@ class ApolloHub(tk.Tk):
         m_scripts.add_command(label="Stop Trader", command=self.stop_trader)
         m_scripts.add_separator()
         m_scripts.add_checkbutton(
-            label="🚀 Auto-start Autopilot on Launch",
+            label="🚀 Engage Autopilot on Launch",
             command=self.toggle_auto_start,
             variable=self.auto_start_var
         )
@@ -2620,7 +2658,7 @@ class ApolloHub(tk.Tk):
             activeforeground=DARK_SELECT_FG,
         )
         m_file.add_command(label="Exit", command=self._on_close)
-        menubar.add_cascade(label="File", menu=m_file)
+        menubar.add_cascade(label="Help", menu=m_file)
 
         self.config(menu=menubar)
 
@@ -2822,7 +2860,7 @@ class ApolloHub(tk.Tk):
         self.lbl_simulation_banner = ttk.Label(
             acct_box, 
             text="", 
-            foreground="#FF8C00",  # Dark orange
+            foreground="#FF6B00",  # Orange
             font=("TkDefaultFont", 10, "bold")
         )
         # Don't pack initially - only show when simulation mode is active
@@ -2852,18 +2890,18 @@ class ApolloHub(tk.Tk):
         # Neural levels overview (spans FULL width under the dual section)
         # Shows the current LONG/SHORT level (0..7) for every coin at once.
         neural_box = ttk.LabelFrame(top_controls, text="Neural Levels (0–7)")
-        neural_box.pack(fill="x", expand=False, padx=12, pady=(0, 12))
+        neural_box.pack(fill="x", expand=False, padx=12, pady=(0, 10))
 
         legend = ttk.Frame(neural_box)
         legend.pack(fill="x", padx=6, pady=(4, 0))
 
-        ttk.Label(legend, text="Level bars: 0 = bottom, 7 = top").pack(side="left")
-        ttk.Label(legend, text="   ").pack(side="left")
+        ttk.Label(legend, text="Level bars:   0 = bottom  7 = top").pack(side="left")
+        ttk.Label(legend, text="  ").pack(side="left")
         ttk.Label(legend, text="L = long").pack(side="left")
         ttk.Label(legend, text="  ").pack(side="left")
         ttk.Label(legend, text="S = short").pack(side="left")
 
-        self.lbl_neural_overview_last = ttk.Label(legend, text="Last: N/A")
+        self.lbl_neural_overview_last = ttk.Label(legend, text="Last status: N/A")
         self.lbl_neural_overview_last.pack(side="right")
 
         # Scrollable area for tiles (auto-hides the scrollbar if everything fits)
@@ -3134,7 +3172,7 @@ class ApolloHub(tk.Tk):
                 try:
                     top_controls.update_idletasks()
                     controls_height = top_controls.winfo_reqheight()
-                    target = controls_height + 10
+                    target = controls_height
                 except Exception:
                     # Fallback: fixed position for controls + neural tiles
                     target = 500
@@ -3155,23 +3193,6 @@ class ApolloHub(tk.Tk):
         self.chart_tabs_bar = WrapFrame(charts_frame)
         # Keep left padding, remove right padding so tabs can reach the edge
         self.chart_tabs_bar.pack(fill="x", padx=(6, 0), pady=(6, 0))
-
-        # === Priority Alert Banner ===
-        # Frame to hold priority alert label (shown when auto-switch active)
-        self._priority_alert_frame = ttk.Frame(charts_frame)
-        self._priority_alert_frame.pack(fill="x", padx=(6, 0), pady=(0, 0))
-        
-        # Alert label: displays coin, distance, and reason when priority is active
-        self._priority_alert_label = ttk.Label(
-            self._priority_alert_frame,
-            text="",
-            font=("Segoe UI", 10, "bold"),
-            foreground="#FF6B00"  # Orange color for visibility
-        )
-        self._priority_alert_label.pack(side="left", padx=6)
-        
-        # Start with alert hidden
-        self._priority_alert_frame.pack_forget()
 
         # Page container (no ttk.Notebook, so there are NO native tabs to show)
         self.chart_pages_container = ttk.Frame(charts_frame)
@@ -5257,7 +5278,7 @@ class ApolloHub(tk.Tk):
                             trained_coins_found += 1
                         
                         # Format and display
-                        msg = f"=== Training Accuracy Results ({coin}) ===\n"
+                        msg = f"Training Accuracy Results ({coin})\n"
                         msg += f"Last trained: {timestamp}\n\n"
                         msg += f"Average Limit-Breach Accuracy: {bounce_average}\n"
                         if signal_average:
@@ -5367,7 +5388,7 @@ class ApolloHub(tk.Tk):
         - Handles auto-start of trader once thinker reports ready
         """
         
-        # === Subprocess Status Detection ===
+        # Subprocess Status Detection
         # Check if processes are alive by polling (non-blocking, no overhead)
         neural_running = bool(self.proc_neural.proc and self.proc_neural.proc.poll() is None)
         trader_running = bool(self.proc_trader.proc and self.proc_trader.proc.poll() is None)
@@ -5521,25 +5542,25 @@ class ApolloHub(tk.Tk):
                 self.lbl_flow_hint.config(text=f"Flow: TRAIN ({len(pending)} coins) → THINK → TRADE")
             elif training_running:
                 # Training is actively running
-                self.lbl_flow_hint.config(text=f"Flow: TRAIN ⧗ → THINK → TRADE")
+                self.lbl_flow_hint.config(text=f"Flow: TRAIN ⧗ THINK → TRADE")
             elif not all_trained:
                 # Training needed before anything else
-                self.lbl_flow_hint.config(text="Next: TRAIN → THINK → TRADE")
+                self.lbl_flow_hint.config(text="Flow: TRAIN → THINK → TRADE")
             elif self._auto_start_trader_pending:
                 # Training done, thinker starting
-                self.lbl_flow_hint.config(text="Flow: TRAIN ✓ → THINK ⧗ → TRADE")
+                self.lbl_flow_hint.config(text="Flow: TRAIN ✓ THINK ⧗ TRADE")
             elif neural_running and trader_running:
                 # Everything is running
-                self.lbl_flow_hint.config(text="Flow: TRAIN ✓ → THINK ✓ → TRADE ✓")
+                self.lbl_flow_hint.config(text="Flow: TRAIN ✓ THINK ✓ TRADE ✓")
             elif neural_running:
                 # Only neural/thinker is running
-                self.lbl_flow_hint.config(text="Flow: TRAIN ✓ → THINK ✓ → TRADE")
+                self.lbl_flow_hint.config(text="Flow: TRAIN ✓ THINK ✓ TRADE")
             elif trader_running:
                 # Only trader is running (unusual but possible)
-                self.lbl_flow_hint.config(text="Flow: TRAIN ✓ → THINK → TRADE ⟳")
+                self.lbl_flow_hint.config(text="Flow: TRAIN ✓ THINK → TRADE ⟳")
             else:
                 # All trained, ready to start
-                self.lbl_flow_hint.config(text="Next: THINK → TRADE (training complete)")
+                self.lbl_flow_hint.config(text="Flow: THINK ✓ THINK → TRADE")
         except Exception:
             pass
 
@@ -5668,7 +5689,7 @@ class ApolloHub(tk.Tk):
         except Exception:
             pass
 
-        # === Auto-Switch to Priority Coin ===
+        # Auto-Switch to Priority Coin
         # Check if a coin is approaching a trigger and switch chart view automatically
         self._check_auto_switch()
 
@@ -5764,7 +5785,7 @@ class ApolloHub(tk.Tk):
     
     def _show_priority_alert(self, coin: str, distance_pct: float, reason: str) -> None:
         """
-        Display the priority alert banner with coin, distance, and reason.
+        Display the priority alert in the current chart's top bar.
         
         Args:
             coin: Coin symbol (e.g., "BTC")
@@ -5774,15 +5795,30 @@ class ApolloHub(tk.Tk):
         try:
             # Format alert text with emoji and details
             alert_text = f"🔔 Priority: {coin} within {distance_pct:.1f}% of {reason}"
-            self._priority_alert_label.config(text=alert_text)
-            self._priority_alert_frame.pack(fill="x", padx=(6, 0), pady=(0, 3))
+            
+            # Update all chart priority labels (current chart will be visible)
+            current_chart = self._current_chart_page
+            if current_chart == "ACCOUNT":
+                chart = self.account_chart
+            else:
+                chart = self.charts.get(current_chart)
+            
+            if chart and hasattr(chart, "priority_alert_label"):
+                chart.priority_alert_label.config(text=alert_text)
         except Exception:
             pass
     
     def _hide_priority_alert(self) -> None:
-        """Hide the priority alert banner."""
+        """Clear the priority alert from all charts."""
         try:
-            self._priority_alert_frame.pack_forget()
+            # Clear priority alert from all coin charts
+            for chart in self.charts.values():
+                if hasattr(chart, "priority_alert_label"):
+                    chart.priority_alert_label.config(text="")
+            
+            # Clear from account chart too
+            if hasattr(self, "account_chart") and hasattr(self.account_chart, "priority_alert_label"):
+                self.account_chart.priority_alert_label.config(text="")
         except Exception:
             pass
 
@@ -5828,7 +5864,7 @@ class ApolloHub(tk.Tk):
         ts = data.get("timestamp")
         try:
             if isinstance(ts, (int, float)):
-                self.lbl_last_status.config(text=f"Last status: {time.strftime('%H:%M:%S', time.localtime(ts))}")
+                self.lbl_last_status.config(text=f"Last status: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))}")
             else:
                 self.lbl_last_status.config(text="Last status: (unknown timestamp)")
         except Exception:
@@ -6050,7 +6086,7 @@ class ApolloHub(tk.Tk):
 
         if not os.path.isfile(self.trade_history_path):
             self.hist_list.delete(0, "end")
-            self.hist_list.insert("end", "(no trade_history.jsonl yet)")
+            self.hist_list.insert("end", "(no trade history yet)")
             return
 
         # show last N lines
@@ -6361,10 +6397,10 @@ class ApolloHub(tk.Tk):
             if hasattr(self, "lbl_neural_overview_last") and self.lbl_neural_overview_last.winfo_exists():
                 if latest_ts:
                     self.lbl_neural_overview_last.config(
-                        text=f"Last: {time.strftime('%H:%M:%S', time.localtime(float(latest_ts)))}"
+                        text=f"Last status: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(latest_ts)))}"
                     )
                 else:
-                    self.lbl_neural_overview_last.config(text="Last: N/A")
+                    self.lbl_neural_overview_last.config(text="Last status: N/A")
         except Exception:
             pass
 
@@ -7560,7 +7596,7 @@ class ApolloHub(tk.Tk):
             wraplength=550
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-        dca_levels = cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0, -40.0])
+        dca_levels = cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0])
         dca_levels_str = ", ".join(str(l) for l in dca_levels)
 
         dca_r = 1
@@ -7627,7 +7663,7 @@ class ApolloHub(tk.Tk):
         ttk.Label(profit_frame, text="Profit target when DCA has triggered", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         ttk.Label(profit_frame, text="Stop-loss (%):").grid(row=7, column=0, sticky="w", padx=(0, 10), pady=6)
-        stop_loss_var = tk.StringVar(value=str(cfg.get("profit_margin", {}).get("stop_loss_pct", -50.0)))
+        stop_loss_var = tk.StringVar(value=str(cfg.get("profit_margin", {}).get("stop_loss_pct", -40.0)))
         ttk.Entry(profit_frame, textvariable=stop_loss_var, width=15).grid(row=7, column=1, sticky="w", pady=6)
         ttk.Label(profit_frame, text="Emergency exit if loss exceeds this % (negative value)", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
@@ -7718,7 +7754,7 @@ class ApolloHub(tk.Tk):
         ttk.Label(timing_frame, text="Pause between trade checks", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         ttk.Label(timing_frame, text="Post-trade delay (seconds):").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
-        post_trade_var = tk.StringVar(value=str(cfg.get("timing", {}).get("post_trade_delay_seconds", 5)))
+        post_trade_var = tk.StringVar(value=str(cfg.get("timing", {}).get("post_trade_delay_seconds", 30)))
         ttk.Entry(timing_frame, textvariable=post_trade_var, width=15).grid(row=3, column=1, sticky="w", pady=6)
         ttk.Label(timing_frame, text="Cooldown after executing trade", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
@@ -7905,7 +7941,7 @@ class ApolloHub(tk.Tk):
                 trailing_gap_var.set(str(profit.get("trailing_gap_pct", 0.5)))
                 target_no_dca_var.set(str(profit.get("target_no_dca_pct", 5.0)))
                 target_with_dca_var.set(str(profit.get("target_with_dca_pct", 2.5)))
-                stop_loss_var.set(str(profit.get("stop_loss_pct", -50.0)))
+                stop_loss_var.set(str(profit.get("stop_loss_pct", -40.0)))
                 
                 # Reset Entry Signals fields
                 entry = defaults.get("entry_signals", {})
@@ -7921,7 +7957,7 @@ class ApolloHub(tk.Tk):
                 # Reset Timing fields
                 timing = defaults.get("timing", {})
                 loop_delay_var.set(str(timing.get("main_loop_delay_seconds", 0.5)))
-                post_trade_var.set(str(timing.get("post_trade_delay_seconds", 5)))
+                post_trade_var.set(str(timing.get("post_trade_delay_seconds", 30)))
                 
                 # Save to file
                 _safe_write_json(config_path, defaults)

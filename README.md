@@ -1,7 +1,7 @@
 # ApolloTrader
 Fully automated crypto trading powered by a custom price prediction AI and a structured/tiered DCA system.
 
-**Version:** Apollo 26 
+**Version:** Apollo Trader 26 
 **Features:** Debug mode, simulation mode, configurable themes, enhanced error handling, and comprehensive settings system.
 
 "It's an instance-based (kNN/kernel-style) predictor with online per-instance reliability weighting, used as a multi-timeframe trading signal." - ChatGPT on the type of AI used in this trading bot.
@@ -20,9 +20,9 @@ Here is how the trading bot utilizes the price prediction ai to automatically ma
 
 For determining when to start trades, the AI's Thinker script sends a signal to start a trade for a coin if the ask price for the coin drops below at least 3 of the the AI's predicted low prices for the coin (it predicts the currently active candle's high and low prices for each timeframe across all timeframes from 1hr to 1wk). **This threshold can be customized** in the Trading Settings (default: LONG signal minimum of 3, SHORT signal maximum of 0).
 
-For determining when to DCA, it uses either the current price level from the AI that is tied to the current amount of DCA buys that have been done on the trade (for example, right after a trade starts when 3 blue lines get crossed, its first DCA wont happen until the price crosses the 4th line, so on so forth), or it uses the configurable drawdown % for its current level, whichever it hits first. It allows a max of 2 DCAs within a rolling 24hr window to keep from dumping all of your money in too quickly on coins that are having an extended downtrend! **DCA levels and limits can be customized** in the Trading Settings.
+For determining when to DCA, it uses either the current price level from the AI that is tied to the current amount of DCA buys that have been done on the trade (for example, right after a trade starts when 3 blue lines get crossed, its first DCA wont happen until the price crosses the 4th line, so on so forth), or it uses the configurable drawdown % for its current level, whichever it hits first. **Default DCA levels: -2.5%, -5.0%, -10.0%, -20.0%** (4 levels). It allows a max of 2 DCAs within a rolling 24hr window to keep from dumping all of your money in too quickly on coins that are having an extended downtrend! **DCA levels and limits can be customized** in the Trading Settings.
 
-For determining when to sell, the bot uses a trailing profit margin to maximize the potential gains. The margin line is set at either 5% gain if no DCA has happened on the trade, or 2.5% gain if any DCA has happened. The trailing margin gap is 0.5% (this is the amount the price has to go over the profit margin to begin raising the profit margin up to TRAIL after the price and maximize how much profit is gained once the price drops below the profit margin again and the bot sells the trade). **All profit margin percentages can be customized** in the Trading Settings.
+For determining when to sell, the bot uses a trailing profit margin to maximize the potential gains. The margin line is set at either 5% gain if no DCA has happened on the trade, or 2.5% gain if any DCA has happened. The trailing margin gap is 0.5% (this is the amount the price has to go over the profit margin to begin raising the profit margin up to TRAIL after the price and maximize how much profit is gained once the price drops below the profit margin again and the bot sells the trade). **Stop loss default: -40%**. **Post-trade cooldown: 30 seconds** (prevents rapid re-entry). **All profit margin percentages and timing can be customized** in the Trading Settings.
 
 # Setup & First-Time Use (Windows)
 
@@ -69,7 +69,12 @@ The **ApolloTrader Hub** will open - this is your main control center.
 
 On first launch, ApolloTrader automatically uses the folder where you extracted it as the main directory. You can change this later if needed.
 
-In the Hub, click **Settings → Hub Settings** and configure:
+The Hub menu bar contains:
+- **Settings**: Hub Settings, Trading Settings, Training Settings, API Setup Wizard
+- **View**: Toggle Autopilot, Simulation Mode, Debug Mode
+- **Help**: Exit application
+
+To configure settings, click **Settings → Hub Settings** and configure:
 
 - **Coins (comma-separated)**: Start with **BTC** for your first run. Add more coins later (ETH, XRP, BNB, DOGE, etc.).
 - **Main neural folder**: Already set to your ApolloTrader directory by default.
@@ -89,6 +94,11 @@ After saving, you will have two credential files in your ApolloTrader folder:
 
 ApolloTrader uses a simple folder structure:  
 **All coins use their own subfolders** (like `BTC\`, `ETH\`, etc.).
+
+Each coin folder contains:
+- Training data and pattern memories
+- Neural prediction files (`low_bound_prices.txt`, `high_bound_prices.txt`)
+- Trading signals and status files
 
 ### Optional: Customize Trading Behavior
 
@@ -134,7 +144,7 @@ The Hub will automatically start the Thinker and Trader modules in the correct o
 - Higher number = stronger signal.
 - LONG = buy-direction signal. SHORT = sell-direction signal.
 
-A TRADE WILL START FOR A COIN IF THAT COIN REACHES A LONG LEVEL OF 3 OR HIGHER WHILE HAVING A SHORT LEVEL OF 0! (Customizable in Trading Settings)
+A TRADE WILL START FOR A COIN IF THAT COIN REACHES A LONG LEVEL OF 4 OR HIGHER WHILE HAVING A SHORT LEVEL OF 0! (Customizable in Trading Settings)
 
 ---
 
@@ -144,11 +154,11 @@ Apollo Trader allows you to customize trading parameters without editing code:
 
 ### Trading Settings
 Access via **Settings → Trading Settings** in the Hub menu:
-- **Entry Signals**: Adjust LONG/SHORT signal thresholds for when trades start
-- **DCA Levels**: Configure drawdown percentages and maximum DCA buys per 24 hours
-- **Profit Margins**: Set trailing gap and target percentages (with/without DCA)
+- **Entry Signals**: Adjust LONG/SHORT signal thresholds for when trades start (default: LONG min 4, SHORT max 0)
+- **DCA Levels**: Configure drawdown percentages and maximum DCA buys per 24 hours (default: 4 levels at -2.5%, -5.0%, -10.0%, -20.0%)
+- **Profit Margins**: Set trailing gap and target percentages (default: 5% no DCA, 2.5% with DCA), stop loss (default: -40%)
 - **Position Sizing**: Control initial allocation percentage and minimum trade size
-- **Timing**: Adjust main loop delay and post-trade delays
+- **Timing**: Adjust main loop delay (default: 0.5s) and post-trade cooldown (default: 30s)
 
 The white marker lines on the Neural Signal tiles update automatically when you change entry signal settings - no restart required!
 
@@ -212,6 +222,14 @@ The Enhanced Edition includes robust error recovery:
 - **Training File Validation**: Detects and skips corrupted training data
 - **Graceful Degradation**: System continues operating even when individual components fail
 
+### Chart & UI Improvements
+- **Centered Window Positioning**: Window always opens within visible screen area
+- **Chart Refresh Rate**: Configurable update interval (default: 10 seconds)
+- **Neural Level Display**: Shows only timeframe labels on chart (1h, 2h, etc.) with automatic overlap hiding
+- **Last Neurals Timestamp**: Charts display when neural predictions were last updated
+- **Optimized Padding**: Improved chart margins for better label visibility
+- **Flow Status Indicators**: Visual checkmarks (✓) and hourglasses (⧗) show system state between stages
+
 ### Training Freshness Gates
 The system now enforces training freshness to prevent trading with outdated predictions:
 - Trainer writes timestamp when training starts
@@ -223,10 +241,11 @@ If a coin shows "NOT TRAINED / OUTDATED", run training before starting the bot.
 
 ### Hot-Reload Configuration
 All configuration changes take effect without restarting:
-- Trading parameters update immediately
-- Coin list changes are detected on-the-fly
+- Trading parameters update immediately (trader checks config every loop)
+- Coin list changes are detected on-the-fly (both hub and trader)
 - Theme updates apply after Hub reload
 - Debug mode toggles instantly
+- Entry signal thresholds update Neural Signal display markers in real-time
 
 ---
 
@@ -250,13 +269,16 @@ This version includes numerous stability and reliability improvements over the o
 - **Weight list synchronization** to prevent index errors
 - **Empty data guards** to handle missing or incomplete data gracefully
 - **Corrupt data detection** with automatic skip and continue logic
+- **Profit margin display fix**: Corrected formatting to show accurate percentages (was displaying 100x too large)
 
 ### Performance Enhancements
 - **Thread-safe directory switching** prevents cross-coin data contamination
 - **Memory caching** reduces redundant file I/O operations
+- **Mtime-based caching** skips reloading unchanged files (neural predictions, trade history, account data)
 - **Configurable sleep timings** to balance performance vs API rate limits
 - **Chart downsampling** to 250 points max for smooth rendering
 - **Debounced UI updates** to prevent excessive redraws
+- **Selective chart updates** refreshes only visible coin tab (prevents network stalls)
 
 ### Network Resilience
 - **Robinhood API retry logic** (5 attempts with exponential backoff)

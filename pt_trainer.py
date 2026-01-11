@@ -602,7 +602,7 @@ tf_minutes = [tf_minutes_map.get(tf, 60) for tf in tf_choices]
 pruning_sigma_level = training_settings.get("pruning_sigma_level", 2.0) if os.path.isfile(import_path) else 2.0
 min_threshold = training_settings.get("min_threshold", 1.0) if os.path.isfile(import_path) else 1.0
 max_threshold = training_settings.get("max_threshold", 25.0) if os.path.isfile(import_path) else 25.0
-pattern_size = training_settings.get("pattern_size", 5) if os.path.isfile(import_path) else 5
+pattern_size = training_settings.get("pattern_size", 4) if os.path.isfile(import_path) else 4
 
 # PID controller parameters (tuned for non-stationary crypto markets)
 # Kp: proportional gain for quick response to current error
@@ -1489,7 +1489,7 @@ while True:
 					# Adaptive target percentage based on pattern complexity
 					# Formula: 0.0001 × sqrt(pattern_size)
 					# Rationale: Larger patterns have more information content, need higher coverage
-					# Examples: pattern_size=2 → 0.0141%, pattern_size=3 → 0.0173%, pattern_size=5 → 0.0224%
+					# Examples: pattern_size=2 → 0.0141%, pattern_size=3 → 0.0173%, pattern_size=4 → 0.02%
 					target_percentage = 0.0001 * math.sqrt(pattern_size)
 					debug_print(f"[DEBUG] TRAINER: Adaptive target_percentage = {target_percentage*100:.2f}% (pattern_size={pattern_size})")
 					

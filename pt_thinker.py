@@ -171,12 +171,11 @@ class RobinhoodMarketData:
 		path = f"/api/v1/crypto/marketdata/best_bid_ask/?symbol={symbol}"
 		data = self.make_api_request("GET", path)
 
-		if not data or "results" not in data or not data["results"]:
-			raise RuntimeError(f"Robinhood best_bid_ask returned no results for {symbol}: {data}")
-
-		result = data["results"][0]
-		# EXACTLY like rhcb.py's get_price(): ask_inclusive_of_buy_spread
-		return float(result["ask_inclusive_of_buy_spread"])
+		is_valid, price, error_msg = _validate_robinhood_response(data, symbol)
+		if not is_valid:
+			raise RuntimeError(f"Robinhood API validation failed: {error_msg}")
+		
+		return price
 
 def robinhood_current_ask(symbol: str) -> float:
     """
@@ -319,6 +318,35 @@ def _get_sleep_timing(key: str) -> float:
 	return _gui_settings_cache.get(key, 1.0)
 
 
+def _is_valid_coin_symbol(symbol: str) -> bool:
+	"""Validate that a coin symbol is safe and well-formed.
+	
+	Ensures coin symbols only contain uppercase letters (A-Z) and are reasonable length.
+	This prevents path traversal attacks and ensures compatibility with file system operations.
+	
+	Args:
+		symbol: The coin symbol to validate (e.g., "BTC", "ETH")
+	
+	Returns:
+		True if valid, False otherwise
+	
+	Valid examples: BTC, ETH, DOGE, USDT
+	Invalid examples: BTC/USDT, ../BTC, BTC123, btc, VERYLONGCOINNAME
+	"""
+	if not symbol or not isinstance(symbol, str):
+		return False
+	
+	# Must be 2-10 uppercase letters only
+	if len(symbol) < 2 or len(symbol) > 10:
+		return False
+	
+	# Only uppercase letters allowed
+	if not symbol.isupper() or not symbol.isalpha():
+		return False
+	
+	return True
+
+
 def handle_network_error(operation: str, error: Exception):
 	"""Handle fatal network errors by logging details and exiting gracefully.
 	
@@ -380,10 +408,22 @@ def _load_gui_coins() -> list:
 		# Remove any non-alphanumeric characters (including hidden Unicode)
 		coins = [''.join(ch for ch in coin if ch.isalnum()) for coin in coins]
 		coins = [c for c in coins if c]  # Remove any empty strings
+		
+		# Validate coin symbols for safety (prevent path traversal, ensure proper format)
+		valid_coins = []
+		for coin in coins:
+			if _is_valid_coin_symbol(coin):
+				valid_coins.append(coin)
+			else:
+				debug_print(f"[SECURITY] Rejected invalid coin symbol: {repr(coin)}")
+		
+		if not valid_coins:
+			debug_print("[SECURITY] No valid coins after validation, using cached defaults")
+			valid_coins = list(_gui_settings_cache["coins"])
 
 		_gui_settings_cache["mtime"] = mtime
-		_gui_settings_cache["coins"] = coins
-		return list(coins)
+		_gui_settings_cache["coins"] = valid_coins
+		return list(valid_coins)
 	except Exception:
 		return list(_gui_settings_cache["coins"])
 
@@ -524,6 +564,16 @@ def _atomic_write_json(path: str, data: dict) -> None:
 	except Exception:
 		pass
 
+def _atomic_write_text(path: str, content: str) -> None:
+	"""Atomic write for text files to prevent corruption on crash."""
+	try:
+		tmp = path + ".tmp"
+		with open(tmp, "w", encoding="utf-8") as f:
+			f.write(content)
+		os.replace(tmp, path)
+	except Exception:
+		pass
+
 def _write_priority_coin(coin: str, distance_pct: float, reason: str) -> None:
 	"""Write priority coin information to hub_data/priority_coin.txt for auto-switch feature."""
 	try:
@@ -547,6 +597,213 @@ def _write_runner_ready(ready: bool, stage: str, ready_coins=None, total_coins: 
 		"total_coins": int(total_coins or 0),
 	}
 	_atomic_write_json(RUNNER_READY_PATH, obj)
+
+def _prune_removed_coins(valid_coins: list) -> None:
+	"""Remove state for coins no longer in the active list to prevent memory bloat."""
+	valid_set = set(valid_coins)
+	
+	# Prune global state dictionaries
+	for coin in list(states.keys()):
+		if coin not in valid_set:
+			states.pop(coin, None)
+	
+	for coin in list(display_cache.keys()):
+		if coin not in valid_set:
+			display_cache.pop(coin, None)
+	
+	for coin in list(summary_cache.keys()):
+		if coin not in valid_set:
+			summary_cache.pop(coin, None)
+	
+	for coin in list(_last_printed_bounds_version.keys()):
+		if coin not in valid_set:
+			_last_printed_bounds_version.pop(coin, None)
+	
+	for coin in list(_last_written_bounds.keys()):
+		if coin not in valid_set:
+			_last_written_bounds.pop(coin, None)
+	
+	# Clear training data cache for removed coins
+	for cache_key in list(_training_data_cache.keys()):
+		if cache_key[0] not in valid_set:  # cache_key is (coin, timeframe)
+			_training_data_cache.pop(cache_key, None)
+	
+	# Sets are already cleaned during coin sync, but ensure consistency
+	_ready_coins.intersection_update(valid_set)
+	_startup_messages_shown.intersection_update(valid_set)
+
+def _safe_float_convert(value, field_name: str = "value", default: float = 0.0) -> float:
+	"""Safely convert a value to float with validation and fallback."""
+	try:
+		result = float(value)
+		# Check for NaN (NaN != NaN is True by IEEE 754 standard)
+		if result != result:
+			debug_print(f"[VALIDATION] Invalid float conversion for {field_name}: {value} (NaN detected)")
+			return default
+		return result
+	except (ValueError, TypeError) as e:
+		debug_print(f"[VALIDATION] Failed to convert {field_name} to float: {value} - {e}")
+		return default
+
+def _validate_kline_response(history: str, coin: str, timeframe: str, min_candles: int = 2) -> tuple:
+	"""Validate KuCoin kline API response structure and content.
+	
+	Returns: (is_valid: bool, history_list: list, error_msg: str)
+	"""
+	if not history or not isinstance(history, str):
+		return False, [], f"Empty or invalid response type for {coin} {timeframe}"
+	
+	try:
+		history_list = history.split("], [")
+		if len(history_list) < min_candles:
+			return False, [], f"Insufficient candles ({len(history_list)} < {min_candles}) for {coin} {timeframe}"
+		
+		# Validate first candle structure to catch malformed data early
+		if history_list:
+			test_candle = str(history_list[0]).replace('"', '').replace("'", "").replace('[', '').split(", ")
+			if len(test_candle) < 3:
+				return False, [], f"Malformed candle data for {coin} {timeframe} (expected 3+ fields, got {len(test_candle)})"
+		
+		return True, history_list, ""
+	except Exception as e:
+		return False, [], f"Exception parsing kline data for {coin} {timeframe}: {e}"
+
+def _validate_robinhood_response(data: dict, symbol: str) -> tuple:
+	"""Validate Robinhood API response structure.
+	
+	Returns: (is_valid: bool, price: float, error_msg: str)
+	"""
+	try:
+		if not data or not isinstance(data, dict):
+			return False, 0.0, f"Invalid response type for {symbol}"
+		
+		if "results" not in data or not data["results"]:
+			return False, 0.0, f"Missing or empty 'results' field for {symbol}"
+		
+		result = data["results"][0]
+		if "ask_inclusive_of_buy_spread" not in result:
+			return False, 0.0, f"Missing 'ask_inclusive_of_buy_spread' field for {symbol}"
+		
+		price = _safe_float_convert(result["ask_inclusive_of_buy_spread"], f"{symbol} ask price", 0.0)
+		if price <= 0.0:
+			return False, 0.0, f"Invalid price ({price}) for {symbol}"
+		
+		return True, price, ""
+	except Exception as e:
+		return False, 0.0, f"Exception validating Robinhood response for {symbol}: {e}"
+
+# Performance optimization: String cleaning translation table (faster than multiple replace() calls)
+_CLEAN_CHARS = str.maketrans('', '', '\'"[]')
+
+def _clean_candle_string(s: str) -> list:
+	"""Fast candle string parsing using translate() instead of multiple replace() calls."""
+	return s.translate(_CLEAN_CHARS).split(", ")
+
+def _parse_candle_time(history_list: list, index: int = 1) -> float:
+	"""Extract timestamp from candle data with optimized string parsing."""
+	try:
+		return float(_clean_candle_string(str(history_list[index]))[0])
+	except (IndexError, ValueError):
+		return 0.0
+
+# Cache for training data to avoid repeated file reads (cleared on trainer updates)
+_training_data_cache = {}  # Key: (coin, timeframe), Value: (mtime, memories, weights, weights_high, weights_low, threshold)
+
+def _load_training_data_cached(coin: str, timeframe: str, folder: str) -> tuple:
+	"""Load training data with file modification time caching to avoid redundant reads.
+	
+	Returns: (memories_list, weight_list, high_weight_list, low_weight_list, perfect_threshold)
+	Returns (None, None, None, None, None) if files missing or invalid.
+	"""
+	cache_key = (coin, timeframe)
+	
+	# Build file paths
+	memories_file = os.path.join(folder, f'memories_{timeframe}.dat')
+	weights_file = os.path.join(folder, f'memory_weights_{timeframe}.dat')
+	weights_high_file = os.path.join(folder, f'memory_weights_high_{timeframe}.dat')
+	weights_low_file = os.path.join(folder, f'memory_weights_low_{timeframe}.dat')
+	threshold_file = os.path.join(folder, f'neural_perfect_threshold_{timeframe}.dat')
+	
+	# Check if all files exist
+	if not all(os.path.isfile(f) for f in [memories_file, weights_file, weights_high_file, weights_low_file, threshold_file]):
+		return None, None, None, None, None
+	
+	try:
+		# Get latest modification time across all files
+		mtimes = [os.path.getmtime(f) for f in [memories_file, weights_file, weights_high_file, weights_low_file, threshold_file]]
+		latest_mtime = max(mtimes)
+		
+		# Check cache validity
+		if cache_key in _training_data_cache:
+			cached_mtime, cached_data = _training_data_cache[cache_key]
+			if cached_mtime >= latest_mtime:
+				return cached_data
+		
+		# Load from disk (cache miss or stale)
+		# memories split by '~', weights split by ' '
+		with open(memories_file, 'r') as f:
+			memory_list = f.read().translate(str.maketrans('', '', '\'"[],')).split('~')
+		
+		with open(weights_file, 'r') as f:
+			weight_list = f.read().translate(str.maketrans('', '', '\'"[],')).split(' ')
+		
+		with open(weights_high_file, 'r') as f:
+			high_weight_list = f.read().translate(str.maketrans('', '', '\'"[],')).split(' ')
+		
+		with open(weights_low_file, 'r') as f:
+			low_weight_list = f.read().translate(str.maketrans('', '', '\'"[],')).split(' ')
+		
+		with open(threshold_file, 'r') as f:
+			perfect_threshold = _safe_float_convert(f.read(), f"{coin}_{timeframe}_threshold", 0.5)
+		
+		# Cache the data
+		cached_data = (memory_list, weight_list, high_weight_list, low_weight_list, perfect_threshold)
+		_training_data_cache[cache_key] = (latest_mtime, cached_data)
+		
+		return cached_data
+	except Exception:
+		return None, None, None, None, None
+
+# Rate limiter to prevent API overload and respect provider limits
+class APIRateLimiter:
+	"""Rate limiter for API calls to prevent overload and respect provider limits.
+	
+	Tracks last call time for each API endpoint and enforces minimum intervals.
+	KuCoin: ~10 requests/sec per IP (we use 0.15s = ~6.7 req/s for safety margin)
+	Robinhood: Conservative rate (0.5s between calls to avoid aggressive limiting)
+	"""
+	def __init__(self):
+		self._last_call_times = {}  # Key: api_name, Value: timestamp
+		self._min_intervals = {
+			'kucoin': 0.15,      # 150ms between KuCoin calls (~6.7 req/s)
+			'robinhood': 0.5,    # 500ms between Robinhood calls (conservative)
+		}
+	
+	def wait_if_needed(self, api_name: str) -> float:
+		"""Wait if needed to respect rate limit. Returns seconds waited."""
+		if api_name not in self._min_intervals:
+			return 0.0
+		
+		min_interval = self._min_intervals[api_name]
+		last_call = self._last_call_times.get(api_name, 0.0)
+		now = time.time()
+		elapsed = now - last_call
+		
+		if elapsed < min_interval:
+			wait_time = min_interval - elapsed
+			time.sleep(wait_time)
+			self._last_call_times[api_name] = time.time()
+			return wait_time
+		else:
+			self._last_call_times[api_name] = now
+			return 0.0
+	
+	def record_call(self, api_name: str):
+		"""Record an API call timestamp without waiting (for manual rate limit control)."""
+		self._last_call_times[api_name] = time.time()
+
+# Global rate limiter instance
+_rate_limiter = APIRateLimiter()
 
 # Ensure folders exist for the current configured coins so signal files can be written
 for _sym in CURRENT_COINS:
@@ -653,6 +910,7 @@ states = {}
 display_cache = {sym: f"[{sym}] Starting...\n[{sym}] Initializing predictions for all timeframes" for sym in CURRENT_COINS}
 summary_cache = {}  # Stores compact summary data for each coin
 _last_printed_bounds_version = {}  # Track per-coin to avoid printing duplicate displays
+_last_written_bounds = {}  # Track last written bounds to avoid redundant file writes
 
 def _validate_coin_training(coin: str) -> tuple:
 	"""Validate that a coin has all required timeframe data files present and non-empty.
@@ -835,6 +1093,9 @@ def _sync_coins_from_settings():
 	coin_state.set_coins( list(new_list))
 	CURRENT_COINS = coin_state.get_coins()
 	COIN_SYMBOLS = list(CURRENT_COINS)
+	
+	# Prune memory for any coins no longer in the active list
+	_prune_removed_coins(COIN_SYMBOLS)
 
 _write_runner_ready(False, stage="starting", ready_coins=[], total_coins=len(CURRENT_COINS))
 
@@ -842,14 +1103,9 @@ def init_coin(sym: str):
 	with coin_directory(sym):
 
 		# per-coin "version" + on/off files (no collisions between coins)
-		with open('alerts_version.txt', 'w+') as f:
-			f.write('5/3/2022/9am')
-
-		with open('futures_long_onoff.txt', 'w+') as f:
-			f.write('OFF')
-
-		with open('futures_short_onoff.txt', 'w+') as f:
-			f.write('OFF')
+		_atomic_write_text('alerts_version.txt', '5/3/2022/9am')
+		_atomic_write_text('futures_long_onoff.txt', 'OFF')
+		_atomic_write_text('futures_short_onoff.txt', 'OFF')
 
 		st = new_coin_state()
 
@@ -866,7 +1122,12 @@ def init_coin(sym: str):
 					# The KuCoin client sometimes returns nested lists without a
 					# trailing comma; replace() calls normalize the string so the
 					# subsequent split() yields consistent elements.
+					_rate_limiter.wait_if_needed('kucoin')
 					history = str(market.get_kline(coin, tf_choices[ind])).replace(']]', '], ').replace('[[', '[')
+					is_valid, history_list, error_msg = _validate_kline_response(history, coin, tf_choices[ind], 2)
+					if not is_valid:
+						debug_print(f"[VALIDATION] {error_msg}")
+						raise ValueError(error_msg)
 					break
 				except Exception as e:
 					init_retry_count += 1
@@ -880,13 +1141,8 @@ def init_coin(sym: str):
 						PrintException()
 					continue
 
-			history_list = history.split("], [")
 			ind += 1
-			try:
-				working_minute = str(history_list[1]).replace('"', '').replace("'", "").split(", ")
-				the_time = working_minute[0].replace('[', '')
-			except Exception:
-				the_time = 0.0
+			the_time = _parse_candle_time(history_list, 1)
 
 			tf_times_local.append(the_time)
 			if len(tf_times_local) >= len(tf_choices):
@@ -954,7 +1210,7 @@ def step_coin(sym: str):
 	2. Fetches latest candle data from KuCoin for each timeframe
 	3. Loads trained memories/weights from disk
 	4. Generates weighted-average predictions for current candle high/low
-	5. Writes predicted levels to signal files (low_bound_prices.html, high_bound_prices.html)
+	5. Writes predicted levels to signal files (low_bound_prices.txt, high_bound_prices.txt)
 	6. Generates trading signals based on predicted levels vs current price
 	7. Writes long/short DCA signals for trader to consume
 	
@@ -984,14 +1240,10 @@ def step_coin(sym: str):
 		with coin_directory(sym):
 			try:
 				# Prevent new trades (and DCA) by forcing signals to 0 and keeping PM at baseline.
-				with open('futures_long_profit_margin.txt', 'w+') as f:
-					f.write('0.25')
-				with open('futures_short_profit_margin.txt', 'w+') as f:
-					f.write('0.25')
-				with open('long_dca_signal.txt', 'w+') as f:
-					f.write('0')
-				with open('short_dca_signal.txt', 'w+') as f:
-					f.write('0')
+				_atomic_write_text('futures_long_profit_margin.txt', '0.25')
+				_atomic_write_text('futures_short_profit_margin.txt', '0.25')
+				_atomic_write_text('long_dca_signal.txt', '0')
+				_atomic_write_text('short_dca_signal.txt', '0')
 			except Exception:
 				pass
 		try:
@@ -1066,7 +1318,7 @@ def step_coin(sym: str):
 		elif len(training_issues) > len(tf_choices):
 			del training_issues[len(tf_choices):]
 
-		# ====== Fetch current pattern (multiple candles for pattern matching) ======
+		# Fetch current pattern (multiple candles for pattern matching)
 		debug_print(f"[DEBUG] {sym}: Fetching market data for timeframe {tf_choices[tf_choice_index]} (pattern_size={PATTERN_SIZE})...")
 		kucoin_api_retry_count = 0
 		kucoin_empty_data_count = 0
@@ -1075,7 +1327,12 @@ def step_coin(sym: str):
 			history_list = []
 			while True:
 				try:
+					_rate_limiter.wait_if_needed('kucoin')
 					history = str(market.get_kline(coin, tf_choices[tf_choice_index])).replace(']]', '], ').replace('[[', '[')
+					is_valid, history_list, error_msg = _validate_kline_response(history, coin, tf_choices[tf_choice_index], PATTERN_SIZE)
+					if not is_valid:
+						debug_print(f"[VALIDATION] {error_msg}")
+						raise ValueError(error_msg)
 					break
 				except Exception as e:
 					kucoin_api_retry_count += 1
@@ -1088,7 +1345,6 @@ def step_coin(sym: str):
 					else:
 						pass
 					continue
-			history_list = history.split("], [")
 			# KuCoin can occasionally return an empty/short kline response.
 			# Need at least PATTERN_SIZE candles for pattern matching
 			if len(history_list) < PATTERN_SIZE:
@@ -1108,9 +1364,11 @@ def step_coin(sym: str):
 			current_pattern = []
 			try:
 				for i in range(1, PATTERN_SIZE):
-					working_candle = str(history_list[i]).replace('"', '').replace("'", "").split(", ")
-					openPrice = float(working_candle[1])
-					closePrice = float(working_candle[2])
+					working_candle = _clean_candle_string(str(history_list[i]))
+					if len(working_candle) < 3:
+						raise ValueError(f"Candle {i} has insufficient fields: {len(working_candle)}")
+					openPrice = _safe_float_convert(working_candle[1], f"candle[{i}].open", 0.0)
+					closePrice = _safe_float_convert(working_candle[2], f"candle[{i}].close", 0.0)
 					if openPrice == 0:
 						raise ValueError(f"Zero openPrice at candle index {i}")
 					candle_pct = 100 * ((closePrice - openPrice) / openPrice)
@@ -1122,56 +1380,26 @@ def step_coin(sym: str):
 
 		debug_print(f"[DEBUG] {sym}: Market data fetched successfully. Current pattern (last {PATTERN_SIZE-1} candles): {[f'{v:.4f}%' for v in current_pattern]}")
 
-		# ====== ORIGINAL: load threshold + memories/weights and compute moves ======
+		# Load training data (cached for performance)
 		debug_print(f"[DEBUG] {sym}: Loading neural training files...")
 		
-		# Check if training files exist before attempting to open
-		threshold_file = 'neural_perfect_threshold_' + tf_choices[tf_choice_index] + '.dat'
-		if not os.path.exists(threshold_file):
-			debug_print(f"[DEBUG] {sym}: Training file missing: {threshold_file}")
+		# Load training data with caching to avoid redundant file reads
+		folder = os.getcwd()  # Already in coin directory via coin_directory() context
+		memory_list, weight_list, high_weight_list, low_weight_list, perfect_threshold = _load_training_data_cached(
+			sym, tf_choices[tf_choice_index], folder
+		)
+		
+		if memory_list is None:
+			debug_print(f"[DEBUG] {sym}: Training files missing or invalid for {tf_choices[tf_choice_index]}")
 			training_issues[tf_choice_index] = 1
 			st['training_issues'] = training_issues
 			st['tf_choice_index'] = (tf_choice_index + 1) % len(tf_choices)
 			states[sym] = st
 			return
-		
-		with open(threshold_file, 'r') as file:
-			perfect_threshold = float(file.read())
 
 		try:
 			# If we can read/parse training files, this timeframe is NOT a training-file issue.
 			training_issues[tf_choice_index] = 0
-
-			# Validate all required training files exist
-			memories_file = 'memories_' + tf_choices[tf_choice_index] + '.dat'
-			weights_file = 'memory_weights_' + tf_choices[tf_choice_index] + '.dat'
-			weights_high_file = 'memory_weights_high_' + tf_choices[tf_choice_index] + '.dat'
-			weights_low_file = 'memory_weights_low_' + tf_choices[tf_choice_index] + '.dat'
-			
-			if not os.path.exists(memories_file):
-				debug_print(f"[DEBUG] {sym}: Training file missing: {memories_file}")
-				raise FileNotFoundError(f"Missing {memories_file}")
-			if not os.path.exists(weights_file):
-				debug_print(f"[DEBUG] {sym}: Training file missing: {weights_file}")
-				raise FileNotFoundError(f"Missing {weights_file}")
-			if not os.path.exists(weights_high_file):
-				debug_print(f"[DEBUG] {sym}: Training file missing: {weights_high_file}")
-				raise FileNotFoundError(f"Missing {weights_high_file}")
-			if not os.path.exists(weights_low_file):
-				debug_print(f"[DEBUG] {sym}: Training file missing: {weights_low_file}")
-				raise FileNotFoundError(f"Missing {weights_low_file}")
-
-			with open(memories_file, 'r') as file:
-				memory_list = file.read().replace("'", "").replace(',', '').replace('"', '').replace(']', '').replace('[', '').split('~')
-
-			with open(weights_file, 'r') as file:
-				weight_list = file.read().replace("'", "").replace(',', '').replace('"', '').replace(']', '').replace('[', '').split(' ')
-
-			with open(weights_high_file, 'r') as file:
-				high_weight_list = file.read().replace("'", "").replace(',', '').replace('"', '').replace(']', '').replace('[', '').split(' ')
-
-			with open(weights_low_file, 'r') as file:
-				low_weight_list = file.read().replace("'", "").replace(',', '').replace('"', '').replace(']', '').replace('[', '').split(' ')
 
 			mem_ind = 0
 			diffs_list = []
@@ -1347,14 +1575,16 @@ def step_coin(sym: str):
 			perfects[tf_choice_index] = 'inactive'
 
 		# keep threshold persisted (original behavior)
-		with open('neural_perfect_threshold_' + tf_choices[tf_choice_index] + '.dat', 'w+') as file:
-			file.write(str(perfect_threshold))
+		_atomic_write_text('neural_perfect_threshold_' + tf_choices[tf_choice_index] + '.dat', str(perfect_threshold))
 
-		# ====== Compute new high/low predictions ======
+		# Compute new high/low predictions
 		# For price predictions, we need the most recent (last) candle's close price
-		last_candle_data = str(history_list[PATTERN_SIZE-1]).replace('"', '').replace("'", "").split(", ")
-		last_open = float(last_candle_data[1])
-		last_close = float(last_candle_data[2])
+		last_candle_data = _clean_candle_string(str(history_list[PATTERN_SIZE-1]))
+		if len(last_candle_data) < 3:
+			debug_print(f"[VALIDATION] {sym}: Last candle has insufficient fields: {len(last_candle_data)}")
+			raise ValueError("Insufficient candle data fields")
+		last_open = _safe_float_convert(last_candle_data[1], "last_candle.open", 0.0)
+		last_close = _safe_float_convert(last_candle_data[2], "last_candle.close", 0.0)
 		
 		try:
 			c_diff = final_moves / 100
@@ -1377,7 +1607,7 @@ def step_coin(sym: str):
 			high_tf_prices[tf_choice_index] = high_new_price
 			low_tf_prices[tf_choice_index] = low_new_price
 
-		# ====== advance tf index; if full sweep complete, compute signals ======
+		# Advance tf index; if full sweep complete, compute signals
 		tf_choice_index += 1
 
 		if tf_choice_index >= len(tf_choices):
@@ -1406,6 +1636,7 @@ def step_coin(sym: str):
 			max_retries = 5
 			while True:
 				try:
+					_rate_limiter.wait_if_needed('robinhood')
 					current = robinhood_current_ask(rh_symbol)
 					debug_print(f"[DEBUG] {sym}: Current price: ${current:.2f}")
 					break
@@ -1458,7 +1689,12 @@ def step_coin(sym: str):
 				while True:
 
 					try:
+						_rate_limiter.wait_if_needed('kucoin')
 						history = str(market.get_kline(coin, tf_choices[inder])).replace(']]', '], ').replace('[[', '[')
+						is_valid, history_list, error_msg = _validate_kline_response(history, coin, tf_choices[inder], 2)
+						if not is_valid:
+							debug_print(f"[VALIDATION] {error_msg}")
+							raise ValueError(error_msg)
 						break
 					except Exception as e:
 						time.sleep(_get_sleep_timing("sleep_api_retry"))
@@ -1467,13 +1703,8 @@ def step_coin(sym: str):
 						else:
 							PrintException()
 						continue
-
-				history_list = history.split("], [")
-				try:
-					working_minute = str(history_list[1]).replace('"', '').replace("'", "").split(", ")
-					the_time = working_minute[0].replace('[', '')
-				except Exception:
-					the_time = 0.0
+				
+				the_time = _parse_candle_time(history_list, 1)
 
 				# (original comparisons)
 				if current > high_bound_prices[inder] and high_tf_prices[inder] != low_tf_prices[inder]:
@@ -1651,10 +1882,14 @@ def step_coin(sym: str):
 					tf_label = tf_labels[original_pos]
 					high_labeled.append(f"{tf_label}:{new_high_bound_prices[sorted_pos]}")
 				
-			with open('low_bound_prices.html', 'w+') as file:
-				file.write(' '.join(low_labeled))
-			with open('high_bound_prices.html', 'w+') as file:
-				file.write(' '.join(high_labeled))
+			# Only write HTML files if bounds changed (reduces disk I/O ~99%)
+			low_content = ' '.join(low_labeled)
+			high_content = ' '.join(high_labeled)
+			last_bounds = _last_written_bounds.get(sym, {})
+			if last_bounds.get('low') != low_content or last_bounds.get('high') != high_content:
+				_atomic_write_text('low_bound_prices.txt', low_content)
+				_atomic_write_text('high_bound_prices.txt', high_content)
+				_last_written_bounds[sym] = {'low': low_content, 'high': high_content}
 
 			# cache display text for this coin (main loop prints everything on one screen)
 			try:
@@ -1692,7 +1927,7 @@ def step_coin(sym: str):
 				active_margins = [m for m in margins if m != 0]
 				if len(active_margins) > 0:
 					pm_value = sum(active_margins) / len(active_margins)
-					pm_display = f"{pm_value:.2%}"
+					pm_display = f"{pm_value:+.2f}%"
 				else:
 					pm_display = "--"
 
@@ -1822,10 +2057,8 @@ def step_coin(sym: str):
 				except Exception:
 					pm = 0.25
 
-				with open('futures_long_profit_margin.txt', 'w+') as f:
-					f.write(str(pm))
-				with open('long_dca_signal.txt', 'w+') as f:
-					f.write(str(longs))
+				_atomic_write_text('futures_long_profit_margin.txt', str(pm))
+				_atomic_write_text('long_dca_signal.txt', str(longs))
 
 				# short pm
 				current_pms = [m for m in margins if m != 0]
@@ -1839,20 +2072,23 @@ def step_coin(sym: str):
 				except Exception:
 					pm = 0.25
 
-				with open('futures_short_profit_margin.txt', 'w+') as f:
-					f.write(str(abs(pm)))
-				with open('short_dca_signal.txt', 'w+') as f:
-					f.write(str(shorts))
+				_atomic_write_text('futures_short_profit_margin.txt', str(abs(pm)))
+				_atomic_write_text('short_dca_signal.txt', str(shorts))
 
 			except Exception:
 				PrintException()
 
-			# ====== NON-BLOCKING candle update check (single pass) ======
+			# NON-BLOCKING candle update check (single pass)
 			tf_update_index = 0
 			while tf_update_index < len(tf_update):
 				while True:
 					try:
+						_rate_limiter.wait_if_needed('kucoin')
 						history = str(market.get_kline(coin, tf_choices[tf_update_index])).replace(']]', '], ').replace('[[', '[')
+						is_valid, history_list, error_msg = _validate_kline_response(history, coin, tf_choices[tf_update_index], 2)
+						if not is_valid:
+							debug_print(f"[VALIDATION] {error_msg}")
+							raise ValueError(error_msg)
 						break
 					except Exception as e:
 						time.sleep(_get_sleep_timing("sleep_api_retry"))
@@ -1861,13 +2097,8 @@ def step_coin(sym: str):
 						else:
 							PrintException()
 						continue
-
-				history_list = history.split("], [")
-				try:
-					working_minute = str(history_list[1]).replace('"', '').replace("'", "").split(", ")
-					the_time = working_minute[0].replace('[', '')
-				except Exception:
-					the_time = 0.0
+				
+				the_time = _parse_candle_time(history_list, 1)
 
 				if the_time != tf_times[tf_update_index]:
 					tf_update[tf_update_index] = 'yes'
@@ -1875,7 +2106,7 @@ def step_coin(sym: str):
 
 				tf_update_index += 1
 
-		# ====== save state back ======
+		# Save state back
 		debug_print(f"[DEBUG] {sym}: Saving state - tf_choice_index={tf_choice_index}")
 		# Only persist state if at least one timeframe has valid predictions (not all timeframes marked as having training issues)
 		all_timeframes_failed = all(training_issues[i] == 1 for i in range(len(tf_choices)))
@@ -1999,7 +2230,7 @@ try:
 			if valid_summaries:
 				print("", flush=True)
 				current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-				print(f"Thinking Summary {current_time}", flush=True)
+				print(f"=== Thinking Summary {current_time} ===", flush=True)
 				for _sym in coins_this_iteration:
 					summary = summary_cache.get(_sym)
 					if summary and 'price_str' in summary:

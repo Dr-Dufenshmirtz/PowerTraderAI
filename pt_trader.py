@@ -354,7 +354,7 @@ _trading_settings_cache = {
 	"mtime": None,
 	"config": {
 		"dca": {
-			"levels": [-2.5, -5.0, -10.0, -20.0, -40.0],
+			"levels": [-2.5, -5.0, -10.0, -20.0],
 			"max_buys_per_window": 2,
 			"window_hours": 24,
 			"position_multiplier": 2.0
@@ -363,7 +363,7 @@ _trading_settings_cache = {
 			"trailing_gap_pct": 0.5,
 			"target_no_dca_pct": 5.0,
 			"target_with_dca_pct": 2.5,
-			"stop_loss_pct": -50.0
+			"stop_loss_pct": -40.0
 		},
 		"entry_signals": {
 			"long_signal_min": 4,
@@ -376,7 +376,7 @@ _trading_settings_cache = {
 		},
 		"timing": {
 			"main_loop_delay_seconds": 0.5,
-			"post_trade_delay_seconds": 5
+			"post_trade_delay_seconds": 30
 		}
 	}
 }
@@ -437,7 +437,7 @@ class CryptoAPITrading:
         # DCA state tracking: tracks which DCA stages have been triggered for each coin in the current trade
         # Stages are tracked by index (0, 1, 2, ...) rather than percentage values for cleaner neural/hardcoded logic
         self.dca_levels_triggered = {}  # { "BTC": [0, 1, 2], "ETH": [0], ... }
-        self.dca_levels = trading_cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0, -40.0])
+        self.dca_levels = trading_cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0])
 
         # Trailing profit margin per-coin state: each coin maintains isolated trailing stop state.
         # The trailing line starts at the PM target (5% no DCA, 2.5% with DCA) and follows price
@@ -448,7 +448,7 @@ class CryptoAPITrading:
         self.trailing_gap_pct = trading_cfg.get("profit_margin", {}).get("trailing_gap_pct", 0.5)
         self.pm_start_pct_no_dca = trading_cfg.get("profit_margin", {}).get("target_no_dca_pct", 5.0)
         self.pm_start_pct_with_dca = trading_cfg.get("profit_margin", {}).get("target_with_dca_pct", 2.5)
-        self.stop_loss_pct = trading_cfg.get("profit_margin", {}).get("stop_loss_pct", -50.0)
+        self.stop_loss_pct = trading_cfg.get("profit_margin", {}).get("stop_loss_pct", -40.0)
 
         # Calculate initial cost basis for all holdings by examining recent buy order execution prices
         # Uses LIFO reconstruction to match current quantities with most recent purchase prices
@@ -711,7 +711,7 @@ class CryptoAPITrading:
     @staticmethod
     def _read_long_price_levels(symbol: str) -> list:
         """
-        Reads low_bound_prices.html from the per-coin folder and returns a list of LONG (blue) price levels.
+        Reads low_bound_prices.txt from the per-coin folder and returns a list of LONG (blue) price levels.
         Returned ordering is highest->lowest so:
           N1 = 1st blue line (top)
           ...
@@ -719,7 +719,7 @@ class CryptoAPITrading:
         """
         sym = str(symbol).upper().strip()
         folder = base_paths.get(sym, main_dir if sym == "BTC" else os.path.join(main_dir, sym))
-        path = os.path.join(folder, "low_bound_prices.html")
+        path = os.path.join(folder, "low_bound_prices.txt")
         try:
             with open(path, "r", encoding="utf-8") as f:
                 raw = (f.read() or "").strip()
@@ -756,7 +756,7 @@ class CryptoAPITrading:
     @staticmethod
     def _read_short_price_levels(symbol: str) -> list:
         """
-        Reads high_bound_prices.html from the per-coin folder and returns a list of SHORT (orange) price levels.
+        Reads high_bound_prices.txt from the per-coin folder and returns a list of SHORT (orange) price levels.
         Returned ordering is lowest->highest so:
           N1 = 1st orange line (bottom)
           ...
@@ -764,7 +764,7 @@ class CryptoAPITrading:
         """
         sym = str(symbol).upper().strip()
         folder = base_paths.get(sym, main_dir if sym == "BTC" else os.path.join(main_dir, sym))
-        path = os.path.join(folder, "high_bound_prices.html")
+        path = os.path.join(folder, "high_bound_prices.txt")
         try:
             with open(path, "r", encoding="utf-8") as f:
                 raw = (f.read() or "").strip()
@@ -1805,7 +1805,7 @@ class CryptoAPITrading:
             self._last_heartbeat = current_time
             num_positions = len([h for h in holdings_list if h.get("asset_code") != "USDC"])
             cb_status = "PAUSED" if _circuit_breaker["is_open"] else "ACTIVE"
-            print(f"[TRADER] Status: {cb_status} | Positions: {num_positions} | Buying Power: ${buying_power:,.2f} | Total Value: ${total_account_value:,.2f}", flush=True)
+            print(f"Status: {cb_status} | Positions: {num_positions} | Buying Power: ${buying_power:,.2f} | Total Value: ${total_account_value:,.2f}", flush=True)
 
         os.system('cls' if os.name == 'nt' else 'clear')
 
@@ -1883,7 +1883,7 @@ class CryptoAPITrading:
 
             # DCA display line calculation - picks whichever trigger line is higher (NEURAL vs HARD).
             # Hardcoded gives an actual price line: cost_basis * (1 + hard_next%).
-            # Neural uses actual predicted price levels from low_bound_prices.html.
+            # Neural uses actual predicted price levels from low_bound_prices.txt.
             dca_line_source = "HARD"
             dca_line_price = 0.0
             dca_line_pct = 0.0
@@ -2047,7 +2047,7 @@ class CryptoAPITrading:
                     print(f"[{symbol}] Stop-loss sell successful: {quantity:.8f} {symbol}{sim_prefix()}")
                     debug_print(f"[DEBUG] TRADER: Stop-loss sell successful for {symbol}")
                     trading_cfg = _load_trading_config()
-                    post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 5)
+                    post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 30)
                     time.sleep(post_delay)
                     holdings = self.get_holdings()
                     continue
@@ -2155,7 +2155,7 @@ class CryptoAPITrading:
                                 print(f"[{symbol}] Sell order successful: {quantity:.8f} {symbol}{sim_prefix()}")
                                 debug_print(f"[DEBUG] TRADER: Trailing PM sell successful for {symbol}")
                                 trading_cfg = _load_trading_config()
-                                post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 5)
+                                post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 30)
                                 time.sleep(post_delay)
                                 holdings = self.get_holdings()
                                 continue
@@ -2376,7 +2376,7 @@ class CryptoAPITrading:
 
                 print(f"[{base_symbol}] Entry signal triggered: Long={buy_count} Short={sell_count} | Allocating ${allocation_in_usd:.2f}{sim_prefix()}")
                 trading_cfg = _load_trading_config()
-                post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 5)
+                post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 30)
                 time.sleep(post_delay)
                 holdings = self.get_holdings()
                 holding_full_symbols = [f"{h['asset_code']}-USD" for h in holdings.get("results", [])]
@@ -2387,7 +2387,7 @@ class CryptoAPITrading:
         # Only need to reinitialize DCA levels if trades were made
         if trades_made:
             trading_cfg = _load_trading_config()
-            post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 5)
+            post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 30)
             time.sleep(post_delay)
             debug_print("[DEBUG] TRADER: Trades made this cycle, reinitializing DCA levels...")
             self.initialize_dca_levels()
@@ -2419,9 +2419,15 @@ class CryptoAPITrading:
             pass
 
     def run(self):
-        print("[TRADER] Starting main loop...\n", flush=True)
-        print(f"[TRADER] Monitoring {len(crypto_symbols)} coins: {', '.join(crypto_symbols)}", flush=True)
-        print(f"[TRADER] Heartbeat interval: 90 seconds\n", flush=True)
+        # Load coins from settings before printing startup message
+        try:
+            _refresh_paths_and_symbols()
+        except Exception:
+            pass
+        
+        print("Starting main loop...\n", flush=True)
+        print(f"Monitoring {len(crypto_symbols)} coins: {', '.join(crypto_symbols)}", flush=True)
+        print(f"Heartbeat interval: 90 seconds\n", flush=True)
         while True:
             try:
                 self.manage_trades()
