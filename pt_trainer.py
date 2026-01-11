@@ -641,8 +641,8 @@ age_pruning_weight_limit = training_settings.get("age_pruning_weight_limit", 1.0
 # Calculate initial and target threshold as average of min and max
 initial_perfect_threshold = (min_threshold + max_threshold) / 2
 perfect_threshold_target = (min_threshold + max_threshold) / 2
-# bounce_accuracy_tolerance is hardcoded (not a training parameter, used only for post-training measurement)
-bounce_accuracy_tolerance = 0.5  # Measures prediction quality at 0.5% inside the trading trigger zone (aligns with trailing gap)
+# bounce_accuracy_tolerance is now adaptive (calculated as 0.25x of avg_volatility per timeframe)
+# This automatically scales by timeframe and market conditions for honest accuracy measurement
 
 # Initialize number_of_candles based on pattern_size setting
 # pattern_size=3 means 3 candles (2 prior values + current), pattern_size=2 means 2 candles (1 prior + current)
@@ -653,7 +653,7 @@ try:
 	debug_print(f"[DEBUG] TRAINER: Loaded training settings from: {import_path}")
 	debug_print(f"[DEBUG] TRAINER: Active timeframes: {tf_choices}")
 	debug_print(f"[DEBUG] TRAINER: Pattern sizes (number_of_candles): {number_of_candles}")
-	debug_print(f"[DEBUG] TRAINER: Training parameters - bounce_tol={bounce_accuracy_tolerance}, pruning_sigma={pruning_sigma_level}")
+	debug_print(f"[DEBUG] TRAINER: Training parameters - bounce_tol=adaptive(0.25×volatility), pruning_sigma={pruning_sigma_level}")
 	debug_print(f"[DEBUG] TRAINER: Threshold limits - min={min_threshold}%, max={max_threshold}%, initial/target={initial_perfect_threshold}%")
 	debug_print(f"[DEBUG] TRAINER: PID Controller - Kp={pid_kp}, Ki={pid_ki}, Kd={pid_kd}, integral_limit={pid_integral_limit}")
 	debug_print(f"[DEBUG] TRAINER: Weight adjustment - base_step={weight_base_step}, cap={weight_step_cap}x (error-proportional scaling)")
@@ -1797,36 +1797,43 @@ while True:
 									else:
 										continue
 							if last_flipped == 'no':
-								# BOUNCE ACCURACY: Tracks only candles where price approached predicted limits
-								# Success (1) = price touched limit but close bounced back inside
-								# Failure (0) = price touched limit and close broke through
-								# Tolerance: percentage points (additive, not multiplicative)
-								tolerance = bounce_accuracy_tolerance
+								# BOUNCE ACCURACY: Tracks candles where price came WITHIN tolerance of predicted limits
+								# Success (1) = price approached limit (within tolerance) and close bounced back (respected the level)
+								# Failure (0) = price approached limit (within tolerance) and close broke through
+								# Tolerance: adaptive based on volatility (0.25× typical candle range)
+								# This scales automatically: tight for 1hr, wider for 1day, adapts to market conditions
+								tolerance = 0.25 * avg_volatility
 								
-								# Case 1: High limit approached, close bounced back (SUCCESS)
-								if high_percent_difference_of_actuals >= high_baseline_price_change_pct + tolerance and percent_difference_of_actuals < high_baseline_price_change_pct:
-									upordown3.append(1)
-									upordown.append(1)
-									upordown4.append(1)
-								# Case 2: Low limit approached, close bounced back (SUCCESS)
-								elif low_percent_difference_of_actuals <= low_baseline_price_change_pct - tolerance and percent_difference_of_actuals > low_baseline_price_change_pct:
-									upordown.append(1)
-									upordown3.append(1)
-									upordown4.append(1)
-								# Case 3: High limit approached, close broke through (FAILURE)
-								elif high_percent_difference_of_actuals >= high_baseline_price_change_pct + tolerance and percent_difference_of_actuals > high_baseline_price_change_pct:
-									upordown3.append(0)
-									upordown2.append(0)
-									upordown.append(0)
-									upordown4.append(0)
-								# Case 4: Low limit approached, close broke through (FAILURE)
-								elif low_percent_difference_of_actuals <= low_baseline_price_change_pct - tolerance and percent_difference_of_actuals < low_baseline_price_change_pct:
-									upordown3.append(0)
-									upordown2.append(0)
-									upordown.append(0)
-									upordown4.append(0)
+								# Case 1: Price came within tolerance of predicted HIGH limit
+								if abs(high_percent_difference_of_actuals - high_baseline_price_change_pct) <= tolerance:
+									if percent_difference_of_actuals < high_baseline_price_change_pct:
+										# Close stayed below predicted high = BOUNCE/RESISTANCE (SUCCESS)
+										upordown3.append(1)
+										upordown.append(1)
+										upordown4.append(1)
+									else:
+										# Close broke above predicted high = BREAKOUT (FAILURE)
+										upordown3.append(0)
+										upordown2.append(0)
+										upordown.append(0)
+										upordown4.append(0)
+								
+								# Case 2: Price came within tolerance of predicted LOW limit
+								elif abs(low_percent_difference_of_actuals - low_baseline_price_change_pct) <= tolerance:
+									if percent_difference_of_actuals > low_baseline_price_change_pct:
+										# Close stayed above predicted low = BOUNCE/SUPPORT (SUCCESS)
+										upordown.append(1)
+										upordown3.append(1)
+										upordown4.append(1)
+									else:
+										# Close broke below predicted low = BREAKDOWN (FAILURE)
+										upordown3.append(0)
+										upordown2.append(0)
+										upordown.append(0)
+										upordown4.append(0)
+								
 								else:
-									# Price stayed within normal range - not tracked for bounce accuracy
+									# Price did not come within tolerance of either limit - not tracked for bounce accuracy
 									pass
 								
 								# SIGNAL ACCURACY: Tracks directional accuracy for trade-signal predictions
