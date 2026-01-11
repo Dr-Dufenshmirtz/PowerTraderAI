@@ -183,20 +183,26 @@ DEFAULT_THEME = {
 }
 
 def _load_theme_settings():
-    """Load custom theme settings if enabled, override global color constants."""
+    """Load custom theme settings if theme path is provided, override global color constants."""
     global DARK_BG, DARK_BG2, DARK_PANEL, DARK_PANEL2, DARK_BORDER
     global DARK_FG, DARK_MUTED, DARK_ACCENT, DARK_ACCENT2, DARK_SELECT_BG, DARK_SELECT_FG
     global CHART_CANDLE_UP, CHART_CANDLE_DOWN, CHART_NEURAL_LONG, CHART_NEURAL_SHORT
     global CHART_SELL_LINE, CHART_DCA_LINE, CHART_ASK_LINE, CHART_BID_LINE, CHART_ACCOUNT_LINE
     global LOG_FONT_FAMILY, LOG_FONT_SIZE, CHART_FONT_FAMILY, CHART_LABEL_FONT_SIZE
     
-    # Check if custom theme is enabled
+    # Check if custom theme path is provided
     try:
         settings = _safe_read_json(SETTINGS_FILE)
-        if not settings or not settings.get("use_custom_theme", False):
+        theme_path = (settings.get("theme_path") or "").strip() if settings else ""
+        
+        # If no theme path provided, use defaults
+        if not theme_path:
             return
         
-        theme_path = os.path.join(os.path.dirname(__file__), THEME_SETTINGS_FILE)
+        # Resolve relative paths from project directory
+        if not os.path.isabs(theme_path):
+            theme_path = os.path.join(os.path.dirname(__file__), theme_path)
+        
         if not os.path.isfile(theme_path):
             return
         
@@ -532,7 +538,11 @@ DEFAULT_SETTINGS = {
     "script_neural_trainer": "pt_trainer.py",
     "script_trader": "pt_trader.py",
     "auto_start_scripts": False,
-    "use_custom_theme": False,
+    "theme_path": "",
+    "auto_switch": {
+        "enabled": True,
+        "threshold_pct": 2.0
+    },
 }
 
 SETTINGS_FILE = "gui_settings.json"
@@ -542,7 +552,7 @@ TRAINING_SETTINGS_FILE = "training_settings.json"
 # Default trading config
 DEFAULT_TRADING_CONFIG = {
     "dca": {
-        "levels": [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0],
+        "levels": [-2.5, -5.0, -10.0, -20.0, -40.0],
         "max_buys_per_window": 2,
         "window_hours": 24,
         "position_multiplier": 2.0
@@ -550,16 +560,17 @@ DEFAULT_TRADING_CONFIG = {
     "profit_margin": {
         "trailing_gap_pct": 0.5,
         "target_no_dca_pct": 5.0,
-        "target_with_dca_pct": 2.5
+        "target_with_dca_pct": 2.5,
+        "stop_loss_pct": -50.0
     },
     "entry_signals": {
         "long_signal_min": 4,
         "short_signal_max": 0
     },
     "position_sizing": {
-        "initial_allocation_pct": 0.005,
+        "initial_allocation_pct": 0.01,
         "min_allocation_usd": 0.5,
-        "risk_multiplier": 0.5
+        "max_concurrent_positions": 3
     },
     "timing": {
         "main_loop_delay_seconds": 0.5,
@@ -802,14 +813,13 @@ def build_coin_folders(main_dir: str, coins: List[str]) -> Dict[str, str]:
 
     return out
 
-def read_price_levels_from_html(path: str) -> List[float]:
+def read_price_levels_from_html(path: str) -> List[Tuple[str, float]]:
     """
-    pt_thinker writes a python-list-like string into low_bound_prices.html / high_bound_prices.html.
+    pt_thinker writes labeled boundaries into low_bound_prices.html / high_bound_prices.html.
 
-    Example (commas often remain):
-        "43210.1, 43100.0, 42950.5"
+    Format: "1h:43210.1 2h:43100.0 4h:42950.5"
 
-    So we normalize separators before parsing.
+    Returns list of (timeframe_label, price) tuples.
     """
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -818,42 +828,68 @@ def read_price_levels_from_html(path: str) -> List[float]:
         if not raw:
             return []
 
-        # Normalize common separators that pt_thinker can leave behind
-        raw = (
-            raw.replace(",", " ")
-               .replace("[", " ")
-               .replace("]", " ")
-               .replace("'", " ")
-        )
-
-        vals: List[float] = []
+        vals: List[Tuple[str, float]] = []
         for tok in raw.split():
             try:
-                v = float(tok)
-
-                # Filter obvious sentinel values used by pt_thinker for "inactive" slots
-                if v <= 0:
-                    continue
-                if v >= 9e15:  # pt_thinker uses 99999999999999999
-                    continue
-
-                vals.append(v)
+                if ':' in tok:
+                    label, price_str = tok.split(':', 1)
+                    v = float(price_str)
+                    
+                    # Filter sentinel values
+                    if v <= 0 or v >= 9e15:
+                        continue
+                    
+                    vals.append((label, v))
             except Exception:
                 pass
-
-        # De-dupe while preserving order (small rounding to avoid float-noise duplicates)
-        out: List[float] = []
-        seen = set()
-        for v in vals:
-            key = round(v, 12)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(v)
-
-        return out
+        
+        return vals
     except Exception:
         return []
+
+def filter_neural_levels_by_timeframe(levels: List[Tuple[str, float]], selected_tf: str) -> List[Tuple[str, float]]:
+    """
+    Filter neural levels to only show timeframes equal to or larger than selected_tf.
+    This helps declutter the chart by hiding shorter-timeframe predictions.
+    
+    Special case: For sub-hourly charts (1min, 5min, 15min, 30min), show ALL neural levels
+    since those timeframes don't have their own predictions but benefit from seeing all longer-term context.
+    """
+    # Timeframe hierarchy (smallest to largest)
+    tf_order = ['1min', '5min', '15min', '30min', '1h', '2h', '4h', '8h', '12h', '1d', '1w']
+    # Also accept 'hour' variants
+    tf_map = {
+        '1hour': '1h', '2hour': '2h', '4hour': '4h', '8hour': '8h', '12hour': '12h',
+        '1day': '1d', '1week': '1w'
+    }
+    
+    # Normalize selected timeframe
+    norm_selected = tf_map.get(selected_tf, selected_tf)
+    
+    try:
+        selected_idx = tf_order.index(norm_selected)
+    except ValueError:
+        # If unknown timeframe, show all levels
+        return levels
+    
+    # If viewing sub-hourly chart (< 1h), show all neural levels for context
+    if selected_idx < 4:  # 1h is at index 4
+        return levels
+    
+    filtered = []
+    for label, price in levels:
+        # Normalize level label
+        norm_label = tf_map.get(label, label)
+        try:
+            label_idx = tf_order.index(norm_label)
+            # Only include if this level's timeframe >= selected timeframe
+            if label_idx >= selected_idx:
+                filtered.append((label, price))
+        except ValueError:
+            # If label not in hierarchy, include it
+            filtered.append((label, price))
+    
+    return filtered
 
 def read_int_from_file(path: str) -> int:
     try:
@@ -1134,8 +1170,12 @@ class CandleChart(ttk.Frame):
             self._neural_cache[path] = (mtime, v)
             return v
 
-        long_levels = _cached(low_path, read_price_levels_from_html, []) if folder else []
-        short_levels = _cached(high_path, read_price_levels_from_html, []) if folder else []
+        long_levels_all = _cached(low_path, read_price_levels_from_html, []) if folder else []
+        short_levels_all = _cached(high_path, read_price_levels_from_html, []) if folder else []
+        
+        # Filter to only show timeframes >= selected timeframe (declutter chart)
+        long_levels_labeled = filter_neural_levels_by_timeframe(long_levels_all, tf)
+        short_levels_labeled = filter_neural_levels_by_timeframe(short_levels_all, tf)
 
         long_sig_path = os.path.join(folder, "long_dca_signal.txt")
         long_sig = _cached(long_sig_path, read_int_from_file, 0) if folder else 0
@@ -1209,13 +1249,13 @@ class CandleChart(ttk.Frame):
             pass
 
         # Overlay Neural levels (blue long, orange short)
-        for lv in long_levels:
+        for label, lv in long_levels_labeled:
             try:
                 self.ax.axhline(y=float(lv), linewidth=1, color=CHART_NEURAL_LONG, alpha=1.0)
             except Exception:
                 pass
 
-        for lv in short_levels:
+        for label, lv in short_levels_labeled:
             try:
                 self.ax.axhline(y=float(lv), linewidth=1, color=CHART_NEURAL_SHORT, alpha=1.0)
             except Exception:
@@ -1335,11 +1375,11 @@ class CandleChart(ttk.Frame):
             _label_right(trail_line, "SELL", CHART_SELL_LINE)
             
             # Add neural level labels (no boxes, only if visible)
-            for idx, lv in enumerate(long_levels, start=1):
-                _label_neural(lv, f"N{idx}", CHART_NEURAL_LONG)
+            for label, lv in long_levels_labeled:
+                _label_neural(lv, label, CHART_NEURAL_LONG)
             
-            for idx, lv in enumerate(short_levels, start=1):
-                _label_neural(lv, f"N{idx}", CHART_NEURAL_SHORT)
+            for label, lv in short_levels_labeled:
+                _label_neural(lv, label, CHART_NEURAL_SHORT)
         except Exception:
             pass
 
@@ -1472,7 +1512,7 @@ class CandleChart(ttk.Frame):
 
         self.canvas.draw_idle()
 
-        self.neural_status_label.config(text=f"Neural: long={long_sig} short={short_sig} | levels L={len(long_levels)} S={len(short_levels)}")
+        self.neural_status_label.config(text=f"Neural: long={long_sig} short={short_sig} | levels L={len(long_levels_labeled)} S={len(short_levels_labeled)}")
 
         # show file update time if possible
         last_ts = None
@@ -2054,6 +2094,12 @@ class ApolloHub(tk.Tk):
         self._cached_trading_config: Optional[dict] = None
         self._cached_trading_config_mtime: Optional[float] = None
 
+        # === Auto-Switch State ===
+        # Tracks manual chart switches to prevent auto-switch from overriding user intent
+        # Auto-switch pauses for 2 minutes after manual selection
+        self._last_manual_chart_switch: float = 0.0  # Timestamp of last manual chart selection
+        self._manual_override_duration: float = 120.0  # 2 minutes in seconds
+
         # account value chart widget (created in _build_layout)
         self.account_chart = None
 
@@ -2132,6 +2178,9 @@ class ApolloHub(tk.Tk):
         
         # Check if first-time setup is needed and open settings dialog
         self.after(1000, self._check_first_time_setup)
+        
+        # Auto-start thinker if coins are trained (delayed to ensure UI is ready)
+        self.after(2000, self._auto_start_thinker_if_trained)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -2576,6 +2625,10 @@ class ApolloHub(tk.Tk):
         self.config(menu=menubar)
 
     def _build_layout(self) -> None:
+        # status bar - pack FIRST so it reserves space before the main content
+        self.status = ttk.Label(self, text="Ready", anchor="w")
+        self.status.pack(fill="x", side="bottom")
+
         outer = ttk.Panedwindow(self, orient="horizontal")
         outer.pack(fill="both", expand=True)
 
@@ -2704,7 +2757,7 @@ class ApolloHub(tk.Tk):
         self.train_coin_combo.bind("<<ComboboxSelected>>", _sync_train_coin)
         _sync_train_coin()
 
-        BTN_W = 14
+        BTN_W = 22  # Standard button width for alignment
 
         # Status display - Last status comes first
         self.lbl_last_status = ttk.Label(controls_left, text="Last status: N/A")
@@ -2747,7 +2800,7 @@ class ApolloHub(tk.Tk):
         
         self.btn_toggle_all = ttk.Button(
             start_all_row,
-            text="🚀 AUTOPILOT",
+            text="🚀 ENGAGE AUTOPILOT",
             width=BTN_W,
             style="Bold.TButton",
             command=self.toggle_all_scripts,
@@ -3103,6 +3156,23 @@ class ApolloHub(tk.Tk):
         # Keep left padding, remove right padding so tabs can reach the edge
         self.chart_tabs_bar.pack(fill="x", padx=(6, 0), pady=(6, 0))
 
+        # === Priority Alert Banner ===
+        # Frame to hold priority alert label (shown when auto-switch active)
+        self._priority_alert_frame = ttk.Frame(charts_frame)
+        self._priority_alert_frame.pack(fill="x", padx=(6, 0), pady=(0, 0))
+        
+        # Alert label: displays coin, distance, and reason when priority is active
+        self._priority_alert_label = ttk.Label(
+            self._priority_alert_frame,
+            text="",
+            font=("Segoe UI", 10, "bold"),
+            foreground="#FF6B00"  # Orange color for visibility
+        )
+        self._priority_alert_label.pack(side="left", padx=6)
+        
+        # Start with alert hidden
+        self._priority_alert_frame.pack_forget()
+
         # Page container (no ttk.Notebook, so there are NO native tabs to show)
         self.chart_pages_container = ttk.Frame(charts_frame)
         # Keep left padding, remove right padding so charts fill to the edge
@@ -3112,7 +3182,12 @@ class ApolloHub(tk.Tk):
         self.chart_pages: Dict[str, ttk.Frame] = {}
         self._current_chart_page: str = "ACCOUNT"
 
-        def _show_page(name: str) -> None:
+        def _show_page(name: str, is_auto_switch: bool = False) -> None:
+            # Track manual chart switches for auto-switch override logic
+            if not is_auto_switch:
+                import time
+                self._last_manual_chart_switch = time.time()
+            
             self._current_chart_page = name
             # hide all pages
             for f in self.chart_pages.values():
@@ -3432,10 +3507,6 @@ class ApolloHub(tk.Tk):
             self._schedule_paned_clamp(getattr(self, "_pw_right_bottom_split", None)),
         ))
 
-        # status bar
-        self.status = ttk.Label(self, text="Ready", anchor="w")
-        self.status.pack(fill="x", side="bottom")
-
     # Panedwindow helper methods to prevent pane collapse during resize
     def _schedule_paned_clamp(self, pw: ttk.Panedwindow) -> None:
         """
@@ -3623,6 +3694,7 @@ class ApolloHub(tk.Tk):
 
         env = os.environ.copy()
         env["POWERTRADER_HUB_DIR"] = self.hub_dir  # so rhcb writes where GUI reads
+        env["PYTHONUNBUFFERED"] = "1"  # Force unbuffered output for real-time logs
 
         try:
             # Hide console window on Windows if flag is set (can be disabled in Apollo.pyw for debugging)
@@ -3716,12 +3788,13 @@ class ApolloHub(tk.Tk):
         neural_running = bool(self.proc_neural.proc and self.proc_neural.proc.poll() is None)
         trader_running = bool(self.proc_trader.proc and self.proc_trader.proc.poll() is None)
 
-        # If anything is running (or we're waiting on thinker readiness), toggle means "stop"
-        if neural_running or trader_running or bool(getattr(self, "_auto_start_trader_pending", False)):
-            self.stop_all_scripts()
+        # If BOTH are running, toggle means "stop trader only" (keep thinker running)
+        if neural_running and trader_running:
+            self.stop_trader()
             return
 
-        # Otherwise, toggle means "start"
+        # Otherwise, toggle means "start" (completes autopilot setup)
+        # If thinker running: starts trader | If neither running: starts full autopilot
         self.start_all_scripts()
     
     def toggle_auto_start(self) -> None:
@@ -3858,7 +3931,7 @@ class ApolloHub(tk.Tk):
         - Displays user-friendly messages for each phase transition
         
         User Experience:
-        - Single button click: "🚀 AUTOPILOT"
+        - Single button click: "🚀 ENGAGE AUTOPILOT"
         - Progress displayed in status bar: "Auto Mode: TRAINING...", "Auto Mode: THINKING...", etc.
         - Info dialogs explain what's happening at each phase
         - Button changes to "⏹ STOP AUTOPILOT" while active
@@ -4363,6 +4436,7 @@ class ApolloHub(tk.Tk):
 
         env = os.environ.copy()
         env["POWERTRADER_HUB_DIR"] = self.hub_dir
+        env["PYTHONUNBUFFERED"] = "1"  # Force unbuffered output for real-time logs
 
         try:
             # Hide console window on Windows if flag is set (can be disabled in Apollo.pyw for debugging)
@@ -4504,6 +4578,47 @@ class ApolloHub(tk.Tk):
                 except Exception:
                     txt.see("end")
 
+    def _auto_start_thinker_if_trained(self) -> None:
+        """
+        Auto-start thinker on Hub startup if at least one coin is trained.
+        
+        This provides a better user experience: if any training is complete,
+        the thinker starts automatically and begins generating predictions immediately
+        for those coins. Untrained coins will show warnings and be skipped.
+        The user can then use the Autopilot button to start the trader when ready.
+        
+        The thinker can still be manually stopped via the Scripts menu if needed.
+        """
+        try:
+            # Don't auto-start if user manually started something already
+            neural_running = bool(self.proc_neural.proc and self.proc_neural.proc.poll() is None)
+            trader_running = bool(self.proc_trader.proc and self.proc_trader.proc.poll() is None)
+            if neural_running or trader_running:
+                return
+            
+            # Check if at least one coin is trained and current
+            status_map = self._training_status_map()
+            trained_coins = [c for c, s in status_map.items() if s == "TRAINED"]
+            stale_coins = self._get_stale_coins()
+            
+            # Remove stale coins from trained list
+            current_trained = [c for c in trained_coins if c not in stale_coins]
+            
+            # If at least one coin is trained and current, start thinker automatically
+            if current_trained:
+                # Reset thinker-ready gate file
+                try:
+                    with open(self.runner_ready_path, "w", encoding="utf-8") as f:
+                        json.dump({"timestamp": time.time(), "ready": False, "stage": "starting"}, f)
+                except Exception:
+                    pass
+                
+                self._start_process(self.proc_neural, log_q=self.runner_log_q, prefix="[THINKER] ")
+        except Exception as e:
+            # Don't show error dialog on startup - just log if debug mode
+            if self.settings.get("debug_mode", False):
+                print(f"[HUB DEBUG] Auto-start thinker check failed: {e}")
+    
     def _check_first_time_setup(self) -> None:
         """Check if this is first-time setup and open settings dialog if needed."""
         try:
@@ -5352,12 +5467,13 @@ class ApolloHub(tk.Tk):
         self.lbl_trader.config(text=f"Trader: {'RUNNING' if trader_running else 'STOPPED'}")
 
         # Start All is now a toggle (Start/Stop)
+        # Only show STOP when BOTH thinker and trader are running (full autopilot active)
         try:
             if hasattr(self, "btn_toggle_all") and self.btn_toggle_all:
-                if neural_running or trader_running or bool(getattr(self, "_auto_start_trader_pending", False)):
+                if neural_running and trader_running:
                     self.btn_toggle_all.config(text="⏹ STOP AUTOPILOT")
                 else:
-                    self.btn_toggle_all.config(text="🚀 AUTOPILOT")
+                    self.btn_toggle_all.config(text="🚀 ENGAGE AUTOPILOT")
         except Exception:
             pass
 
@@ -5417,7 +5533,7 @@ class ApolloHub(tk.Tk):
                 self.lbl_flow_hint.config(text="Flow: TRAIN ✓ → THINK ✓ → TRADE ✓")
             elif neural_running:
                 # Only neural/thinker is running
-                self.lbl_flow_hint.config(text="Flow: TRAIN ✓ → THINK ⟳ → TRADE")
+                self.lbl_flow_hint.config(text="Flow: TRAIN ✓ → THINK ✓ → TRADE")
             elif trader_running:
                 # Only trader is running (unusual but possible)
                 self.lbl_flow_hint.config(text="Flow: TRAIN ✓ → THINK → TRADE ⟳")
@@ -5534,7 +5650,7 @@ class ApolloHub(tk.Tk):
                     history_line_count = len(self.trainer_log_history[sel])
                     
                     # If mismatch, refresh the entire display
-                    if abs(current_line_count - history_line_count) > 1:
+                    if current_line_count != history_line_count:
                         was_at_bottom = False
                         try:
                             yview = self.trainer_text.yview()
@@ -5552,8 +5668,123 @@ class ApolloHub(tk.Tk):
         except Exception:
             pass
 
+        # === Auto-Switch to Priority Coin ===
+        # Check if a coin is approaching a trigger and switch chart view automatically
+        self._check_auto_switch()
+
         self.status.config(text=f"{_now_str()}  |  v{VERSION}  |  main_dir={self.settings['main_neural_dir']}")
         self.after(int(float(self.settings.get("ui_refresh_seconds", 1.0)) * 1000), self._tick)
+
+    def _check_auto_switch(self) -> None:
+        """
+        Check if auto-switch should activate based on priority coin proximity to triggers.
+        Also manages the priority alert banner visibility and content.
+        
+        Process:
+        1. Read gui_settings.json to check if auto-switch is enabled
+        2. Check if manual override is active (2-minute cooldown after user selection)
+        3. Read hub_data/priority_coin.txt for closest coin to trigger
+        4. Check if distance is within threshold (default 2%)
+        5. Update alert banner with priority info
+        6. Switch chart view if all conditions met
+        
+        Guards:
+        - Only runs if auto-switch enabled in GUI settings (Display Settings)
+        - Respects manual override timer (2 minutes)
+        - Only switches if current chart is different from priority
+        - Silently fails if priority file missing or malformed
+        """
+        try:
+            # Load auto-switch settings from GUI settings
+            auto_switch_cfg = self.settings.get("auto_switch", {})
+            
+            if not auto_switch_cfg.get("enabled", False):
+                # Feature disabled - hide alert
+                self._hide_priority_alert()
+                return
+            
+            threshold = auto_switch_cfg.get("threshold_pct", 2.0)
+            
+            # Check manual override timer
+            import time
+            now = time.time()
+            time_since_manual = now - self._last_manual_chart_switch
+            
+            if time_since_manual < self._manual_override_duration:
+                # User manually selected a chart recently - respect their choice
+                self._hide_priority_alert()
+                return
+            
+            # Read priority coin file
+            priority_path = os.path.join(self.hub_dir, "priority_coin.txt")
+            if not os.path.isfile(priority_path):
+                self._hide_priority_alert()
+                return  # No priority data yet
+            
+            try:
+                with open(priority_path, 'r', encoding='utf-8') as f:
+                    import json
+                    priority_data = json.load(f)
+            except Exception:
+                self._hide_priority_alert()
+                return  # Malformed file
+            
+            # Extract priority coin info
+            priority_coin = priority_data.get("coin", "").strip().upper()
+            distance_pct = priority_data.get("distance_pct", 999.0)
+            reason = priority_data.get("reason", "")
+            
+            if not priority_coin or priority_coin not in self.coins:
+                self._hide_priority_alert()
+                return  # Invalid coin
+            
+            # Check if within threshold
+            if distance_pct > threshold:
+                self._hide_priority_alert()
+                return  # Not close enough to trigger
+            
+            # Show alert banner with priority info
+            self._show_priority_alert(priority_coin, distance_pct, reason)
+            
+            # Check if already on this chart
+            current_chart = getattr(self, "_current_chart_page", "ACCOUNT")
+            if current_chart == priority_coin:
+                return  # Already viewing priority coin
+            
+            # Switch to priority coin
+            if hasattr(self, "_show_chart_page"):
+                self._show_chart_page(priority_coin, is_auto_switch=True)
+                
+                # Optional: Log the auto-switch in debug mode
+                if self.settings.get("debug_mode", False):
+                    print(f"[HUB AUTO-SWITCH] Switched to {priority_coin} ({distance_pct:.1f}% from {reason})")
+        except Exception:
+            self._hide_priority_alert()
+            pass  # Silently fail - don't crash tick loop
+    
+    def _show_priority_alert(self, coin: str, distance_pct: float, reason: str) -> None:
+        """
+        Display the priority alert banner with coin, distance, and reason.
+        
+        Args:
+            coin: Coin symbol (e.g., "BTC")
+            distance_pct: Percentage distance to trigger
+            reason: Trigger type (e.g., "Long Entry", "Long Exit")
+        """
+        try:
+            # Format alert text with emoji and details
+            alert_text = f"🔔 Priority: {coin} within {distance_pct:.1f}% of {reason}"
+            self._priority_alert_label.config(text=alert_text)
+            self._priority_alert_frame.pack(fill="x", padx=(6, 0), pady=(0, 3))
+        except Exception:
+            pass
+    
+    def _hide_priority_alert(self) -> None:
+        """Hide the priority alert banner."""
+        try:
+            self._priority_alert_frame.pack_forget()
+        except Exception:
+            pass
 
     def _refresh_trader_status(self) -> None:
         # mtime cache: rebuilding the whole tree every tick is expensive with many rows
@@ -7033,15 +7264,55 @@ class ApolloHub(tk.Tk):
         add_row(display_frame, display_r, "Chart refresh seconds:", chart_refresh_var); display_r += 1
         add_row(display_frame, display_r, "Candles limit:", candles_limit_var); display_r += 1
         
-        # Custom theme checkbox
-        use_custom_theme_var = tk.BooleanVar(value=self.settings.get("use_custom_theme", False))
-        ttk.Label(display_frame, text="").grid(row=display_r, column=0, sticky="w"); display_r += 1  # spacing
-        theme_check = ttk.Checkbutton(
+        # Theme path (if empty, uses default)
+        theme_path_var = tk.StringVar(value=self.settings.get("theme_path", ""))
+        add_row(display_frame, display_r, "Theme path:", theme_path_var); display_r += 1
+        ttk.Label(
             display_frame,
-            text="Use custom theme (requires restart)",
-            variable=use_custom_theme_var
-        )
-        theme_check.grid(row=display_r, column=0, columnspan=2, sticky="w", pady=6); display_r += 1
+            text="Leave empty for default theme. Relative paths resolved from project directory.",
+            foreground=DARK_MUTED,
+            font=("TkDefaultFont", 8)
+        ).grid(row=display_r, column=0, columnspan=2, sticky="w", pady=(0, 6)); display_r += 1
+        
+        # Auto-Switch section
+        ttk.Label(display_frame, text="").grid(row=display_r, column=0, sticky="w"); display_r += 1  # spacing
+        ttk.Label(
+            display_frame,
+            text="Auto-Switch to Priority Coin:",
+            font=("TkDefaultFont", 9, "bold")
+        ).grid(row=display_r, column=0, columnspan=2, sticky="w"); display_r += 1
+        
+        ttk.Label(
+            display_frame,
+            text="Automatically switches chart view to coins approaching buy/exit triggers.",
+            foreground=DARK_MUTED,
+            font=("TkDefaultFont", 8)
+        ).grid(row=display_r, column=0, columnspan=2, sticky="w"); display_r += 1
+        
+        autoswitch_enabled_var = tk.BooleanVar(value=self.settings.get("auto_switch", {}).get("enabled", False))
+        ttk.Checkbutton(
+            display_frame,
+            text="Enable Auto-Switch",
+            variable=autoswitch_enabled_var
+        ).grid(row=display_r, column=0, columnspan=2, sticky="w", pady=6); display_r += 1
+        
+        ttk.Label(display_frame, text="Threshold (%):").grid(row=display_r, column=0, sticky="w", padx=(0, 10))
+        autoswitch_threshold_var = tk.StringVar(value=str(self.settings.get("auto_switch", {}).get("threshold_pct", 2.0)))
+        ttk.Entry(display_frame, textvariable=autoswitch_threshold_var, width=15).grid(row=display_r, column=1, sticky="w"); display_r += 1
+        
+        ttk.Label(
+            display_frame,
+            text="Switches when within this % of trigger (e.g., 2.0 for 2%)",
+            foreground=DARK_MUTED,
+            font=("TkDefaultFont", 8)
+        ).grid(row=display_r, column=0, columnspan=2, sticky="w"); display_r += 1
+        
+        ttk.Label(
+            display_frame,
+            text="⚠ Manual chart selection pauses auto-switch for 2 minutes",
+            foreground="orange",
+            font=("TkDefaultFont", 8, "bold")
+        ).grid(row=display_r, column=0, columnspan=2, sticky="w", pady=(5, 0)); display_r += 1
 
         btns = ttk.Frame(frm)
         btns.grid(row=r, column=0, columnspan=3, sticky="ew", pady=14)
@@ -7063,20 +7334,24 @@ class ApolloHub(tk.Tk):
                 self.settings["chart_refresh_seconds"] = float(chart_refresh_var.get().strip())
                 self.settings["candles_limit"] = int(float(candles_limit_var.get().strip()))
                 
-                # Handle custom theme checkbox
-                prev_use_theme = self.settings.get("use_custom_theme", False)
-                new_use_theme = use_custom_theme_var.get()
-                self.settings["use_custom_theme"] = new_use_theme
+                # Handle theme path
+                prev_theme_path = self.settings.get("theme_path", "")
+                new_theme_path = theme_path_var.get().strip()
+                self.settings["theme_path"] = new_theme_path
                 
-                # If checkbox was just enabled and theme file doesn't exist, create it with defaults
-                if new_use_theme and not prev_use_theme:
-                    theme_path = os.path.join(self.project_dir, THEME_SETTINGS_FILE)
-                    if not os.path.isfile(theme_path):
-                        try:
-                            with open(theme_path, "w", encoding="utf-8") as f:
-                                json.dump(DEFAULT_THEME, f, indent=4)
-                        except Exception as e:
-                            messagebox.showwarning("Theme file creation failed", f"Couldn't create {THEME_SETTINGS_FILE}:\n{e}")
+                # Handle auto-switch settings
+                autoswitch_enabled = autoswitch_enabled_var.get()
+                autoswitch_threshold = float(autoswitch_threshold_var.get().strip())
+                
+                # Validate auto-switch threshold
+                if not (0 < autoswitch_threshold <= 100):
+                    messagebox.showerror("Validation Error", "Auto-switch threshold must be between 0 and 100%")
+                    return
+                
+                self.settings["auto_switch"] = {
+                    "enabled": autoswitch_enabled,
+                    "threshold_pct": autoswitch_threshold
+                }
                 
                 self._save_settings()
 
@@ -7108,7 +7383,7 @@ class ApolloHub(tk.Tk):
                 self._refresh_coin_dependent_ui(prev_coins)
 
                 # Notify user about restart if theme changed
-                if new_use_theme != prev_use_theme:
+                if new_theme_path != prev_theme_path:
                     messagebox.showinfo(
                         "Saved", 
                         "Settings saved.\n\nTheme setting changed — restart ApolloTrader for full effect."
@@ -7139,7 +7414,7 @@ class ApolloHub(tk.Tk):
                 ui_refresh_var.set(str(defaults.get("ui_refresh_seconds", 1.0)))
                 chart_refresh_var.set(str(defaults.get("chart_refresh_seconds", 10.0)))
                 candles_limit_var.set(str(defaults.get("candles_limit", 120)))
-                use_custom_theme_var.set(defaults.get("use_custom_theme", False))
+                theme_path_var.set(defaults.get("theme_path", ""))
                 
                 # Save to file
                 self.settings.update(defaults)
@@ -7285,30 +7560,20 @@ class ApolloHub(tk.Tk):
             wraplength=550
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-        dca_levels = cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0])
+        dca_levels = cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0, -40.0])
+        dca_levels_str = ", ".join(str(l) for l in dca_levels)
 
-        # Cap DCA levels displayed in UI to prevent layout issues with excessive levels
-        MAX_DCA_LEVELS_UI = 20
-        if len(dca_levels) > MAX_DCA_LEVELS_UI:
-            if self.settings.get("debug_mode", False):
-                print(f"[HUB DEBUG] DCA levels truncated for UI display: {len(dca_levels)} -> {MAX_DCA_LEVELS_UI}")
-            dca_levels = dca_levels[:MAX_DCA_LEVELS_UI]
-
-        dca_level_vars = []
         dca_r = 1
-        for i, level in enumerate(dca_levels):
-            dca_level_var = tk.StringVar(value=str(level))
-            dca_level_vars.append(dca_level_var)
-            ttk.Label(dca_frame, text=f"DCA Level {i+1} (%):").grid(row=dca_r, column=0, sticky="w", padx=(0, 10), pady=6)
-            ttk.Entry(dca_frame, textvariable=dca_level_var, width=15).grid(row=dca_r, column=1, sticky="w", pady=6)
-            dca_r += 1
-            if i == 0:
-                ttk.Label(dca_frame, text="(must be negative, e.g., -2.5)", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=dca_r, column=0, columnspan=2, sticky="w", pady=(0, 10))
-                dca_r += 1
+        ttk.Label(dca_frame, text="DCA Levels (%):").grid(row=dca_r, column=0, sticky="w", padx=(0, 10), pady=6)
+        dca_levels_var = tk.StringVar(value=dca_levels_str)
+        ttk.Entry(dca_frame, textvariable=dca_levels_var, width=50).grid(row=dca_r, column=1, sticky="w", pady=6)
+        dca_r += 1
+        ttk.Label(dca_frame, text="Comma-separated negative percentages (e.g., -2.5, -5, -10, -20, -40)", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=dca_r, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        dca_r += 1
 
         ttk.Label(
             dca_frame,
-            text="⚠ Levels must be negative and increasingly negative (e.g., -2.5, -5, -10). Each must be unique.",
+            text="⚠ Levels must be negative and increasingly negative. Each must be unique. Max 20 levels.",
             foreground="orange",
             font=("TkDefaultFont", 8, "bold")
         ).grid(row=dca_r, column=0, columnspan=2, sticky="w", pady=(0, 15)); dca_r += 1
@@ -7361,12 +7626,17 @@ class ApolloHub(tk.Tk):
         ttk.Entry(profit_frame, textvariable=target_with_dca_var, width=15).grid(row=5, column=1, sticky="w", pady=6)
         ttk.Label(profit_frame, text="Profit target when DCA has triggered", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
+        ttk.Label(profit_frame, text="Stop-loss (%):").grid(row=7, column=0, sticky="w", padx=(0, 10), pady=6)
+        stop_loss_var = tk.StringVar(value=str(cfg.get("profit_margin", {}).get("stop_loss_pct", -50.0)))
+        ttk.Entry(profit_frame, textvariable=stop_loss_var, width=15).grid(row=7, column=1, sticky="w", pady=6)
+        ttk.Label(profit_frame, text="Emergency exit if loss exceeds this % (negative value)", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
         ttk.Label(
             profit_frame,
-            text="Note: Lower target with DCA helps exit averaged-down positions faster",
-            foreground=DARK_FG,
-            font=("TkDefaultFont", 8, "italic")
-        ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(5, 0))
+            text="⚠ Stop-loss is a safety net for catastrophic drops. Set deep enough to allow DCA stages.",
+            foreground="orange",
+            font=("TkDefaultFont", 8, "bold")
+        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(5, 0))
 
         # Entry Signals Section
         entry_frame = ttk.LabelFrame(frm, text=" Entry Signals ", padding=15)
@@ -7408,23 +7678,23 @@ class ApolloHub(tk.Tk):
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
         
         ttk.Label(position_frame, text="Initial allocation (%):").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
-        allocation_var = tk.StringVar(value=str(cfg.get("position_sizing", {}).get("initial_allocation_pct", 0.005)))
+        allocation_var = tk.StringVar(value=str(cfg.get("position_sizing", {}).get("initial_allocation_pct", 0.01) * 100))
         ttk.Entry(position_frame, textvariable=allocation_var, width=15).grid(row=1, column=1, sticky="w", pady=6)
-        ttk.Label(position_frame, text="Percentage of account for first buy", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ttk.Label(position_frame, text="Percentage of account for first buy (e.g., 1 for 1%)", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         ttk.Label(position_frame, text="Minimum allocation ($):").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
         min_alloc_var = tk.StringVar(value=str(cfg.get("position_sizing", {}).get("min_allocation_usd", 0.5)))
         ttk.Entry(position_frame, textvariable=min_alloc_var, width=15).grid(row=3, column=1, sticky="w", pady=6)
         ttk.Label(position_frame, text="Floor for position size in dollars", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-        ttk.Label(position_frame, text="Risk multiplier:").grid(row=5, column=0, sticky="w", padx=(0, 10), pady=6)
-        risk_multiplier_var = tk.StringVar(value=str(cfg.get("position_sizing", {}).get("risk_multiplier", 0.5)))
-        ttk.Entry(position_frame, textvariable=risk_multiplier_var, width=15).grid(row=5, column=1, sticky="w", pady=6)
-        ttk.Label(position_frame, text="Fractional Kelly criterion (0.5 = half Kelly)", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ttk.Label(position_frame, text="Max concurrent positions:").grid(row=5, column=0, sticky="w", padx=(0, 10), pady=6)
+        max_positions_var = tk.StringVar(value=str(cfg.get("position_sizing", {}).get("max_concurrent_positions", 3)))
+        ttk.Entry(position_frame, textvariable=max_positions_var, width=15).grid(row=5, column=1, sticky="w", pady=6)
+        ttk.Label(position_frame, text="Maximum number of coins to hold simultaneously", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         ttk.Label(
             position_frame,
-            text="⚠ Risk multiplier controls leverage. 0.5 is conservative (half Kelly), 1.0 is aggressive (full Kelly).",
+            text="⚠ Limits exposure by preventing too many positions at once. Slots open when positions exit.",
             foreground="orange",
             font=("TkDefaultFont", 8, "bold")
         ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(5, 0))
@@ -7467,7 +7737,18 @@ class ApolloHub(tk.Tk):
         def save():
             try:
                 # Parse and validate all fields
-                dca_lvls = [float(v.get()) for v in dca_level_vars]
+                dca_input = dca_levels_var.get().strip()
+                if not dca_input:
+                    messagebox.showerror("Validation Error", "DCA levels cannot be empty")
+                    return
+                dca_lvls = [float(x.strip()) for x in dca_input.split(',') if x.strip()]
+                if not dca_lvls:
+                    messagebox.showerror("Validation Error", "DCA levels cannot be empty")
+                    return
+                if len(dca_lvls) > 20:
+                    messagebox.showerror("Validation Error", f"Maximum 20 DCA levels allowed (you entered {len(dca_lvls)})")
+                    return
+                
                 max_buys = int(max_buys_var.get())
                 window_hrs = int(window_hours_var.get())
                 multiplier = float(multiplier_var.get())
@@ -7475,13 +7756,14 @@ class ApolloHub(tk.Tk):
                 trailing_gap = float(trailing_gap_var.get())
                 target_no_dca = float(target_no_dca_var.get())
                 target_with_dca = float(target_with_dca_var.get())
+                stop_loss = float(stop_loss_var.get())
                 
                 long_min = int(long_min_var.get())
                 short_max = int(short_max_var.get())
                 
-                alloc_pct = float(allocation_var.get())
+                alloc_pct = float(allocation_var.get()) / 100.0  # Convert from percentage to decimal
                 min_alloc = float(min_alloc_var.get())
-                risk_multiplier = float(risk_multiplier_var.get())
+                max_positions = int(max_positions_var.get())
                 
                 loop_delay = float(loop_delay_var.get())
                 post_trade = float(post_trade_var.get())
@@ -7519,9 +7801,6 @@ class ApolloHub(tk.Tk):
 
                 if max_buys < 1:
                     messagebox.showerror("Validation Error", "Max DCA buys per window must be at least 1")
-                    return
-                
-                if window_hrs < 1:
                     messagebox.showerror("Validation Error", "Window hours must be at least 1")
                     return
 
@@ -7539,6 +7818,9 @@ class ApolloHub(tk.Tk):
                 if not (0 < target_with_dca <= 100):
                     messagebox.showerror("Validation Error", "Target with DCA must be between 0 and 100%")
                     return
+                if not (-100 <= stop_loss < 0):
+                    messagebox.showerror("Validation Error", "Stop-loss must be negative and between -100 and 0% (e.g., -50)")
+                    return
 
                 # Entry signals
                 if not (1 <= long_min <= 7):
@@ -7555,8 +7837,8 @@ class ApolloHub(tk.Tk):
                 if min_alloc < 0:
                     messagebox.showerror("Validation Error", "Minimum allocation must be non-negative")
                     return
-                if not (0 < risk_multiplier <= 1.0):
-                    messagebox.showerror("Validation Error", "Risk multiplier must be between 0 and 1.0 (fractional Kelly)")
+                if max_positions < 1:
+                    messagebox.showerror("Validation Error", "Max concurrent positions must be at least 1")
                     return
 
                 # Timing
@@ -7578,7 +7860,8 @@ class ApolloHub(tk.Tk):
                     "profit_margin": {
                         "trailing_gap_pct": trailing_gap,
                         "target_no_dca_pct": target_no_dca,
-                        "target_with_dca_pct": target_with_dca
+                        "target_with_dca_pct": target_with_dca,
+                        "stop_loss_pct": stop_loss
                     },
                     "entry_signals": {
                         "long_signal_min": long_min,
@@ -7587,7 +7870,7 @@ class ApolloHub(tk.Tk):
                     "position_sizing": {
                         "initial_allocation_pct": alloc_pct,
                         "min_allocation_usd": min_alloc,
-                        "risk_multiplier": risk_multiplier
+                        "max_concurrent_positions": max_positions
                     },
                     "timing": {
                         "main_loop_delay_seconds": loop_delay,
@@ -7612,11 +7895,7 @@ class ApolloHub(tk.Tk):
                 # Reset DCA fields
                 dca = defaults.get("dca", {})
                 levels = dca.get("levels", [])
-                for i, var in enumerate(dca_level_vars):
-                    if i < len(levels):
-                        var.set(str(levels[i]))
-                    else:
-                        var.set("")
+                dca_levels_var.set(", ".join(str(l) for l in levels))
                 max_buys_var.set(str(dca.get("max_buys_per_window", 2)))
                 window_hours_var.set(str(dca.get("window_hours", 24)))
                 multiplier_var.set(str(dca.get("position_multiplier", 2.0)))
@@ -7626,6 +7905,7 @@ class ApolloHub(tk.Tk):
                 trailing_gap_var.set(str(profit.get("trailing_gap_pct", 0.5)))
                 target_no_dca_var.set(str(profit.get("target_no_dca_pct", 5.0)))
                 target_with_dca_var.set(str(profit.get("target_with_dca_pct", 2.5)))
+                stop_loss_var.set(str(profit.get("stop_loss_pct", -50.0)))
                 
                 # Reset Entry Signals fields
                 entry = defaults.get("entry_signals", {})
@@ -7634,9 +7914,9 @@ class ApolloHub(tk.Tk):
                 
                 # Reset Position Sizing fields
                 position = defaults.get("position_sizing", {})
-                allocation_var.set(str(position.get("initial_allocation_pct", 0.005)))
+                allocation_var.set(str(position.get("initial_allocation_pct", 0.01) * 100))
                 min_alloc_var.set(str(position.get("min_allocation_usd", 0.5)))
-                risk_multiplier_var.set(str(position.get("risk_multiplier", 0.5)))
+                max_positions_var.set(str(position.get("max_concurrent_positions", 3)))
                 
                 # Reset Timing fields
                 timing = defaults.get("timing", {})

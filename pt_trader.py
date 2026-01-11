@@ -43,7 +43,8 @@ from typing import Any, Dict, Optional
 
 # Ensure clean console output
 try:
-	sys.stdout.reconfigure(encoding='utf-8')
+	sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+	sys.stderr.reconfigure(encoding='utf-8', line_buffering=True)
 except:
 	pass
 
@@ -353,7 +354,7 @@ _trading_settings_cache = {
 	"mtime": None,
 	"config": {
 		"dca": {
-			"levels": [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0],
+			"levels": [-2.5, -5.0, -10.0, -20.0, -40.0],
 			"max_buys_per_window": 2,
 			"window_hours": 24,
 			"position_multiplier": 2.0
@@ -361,16 +362,17 @@ _trading_settings_cache = {
 		"profit_margin": {
 			"trailing_gap_pct": 0.5,
 			"target_no_dca_pct": 5.0,
-			"target_with_dca_pct": 2.5
+			"target_with_dca_pct": 2.5,
+			"stop_loss_pct": -50.0
 		},
 		"entry_signals": {
 			"long_signal_min": 4,
 			"short_signal_max": 0
 		},
 		"position_sizing": {
-			"initial_allocation_pct": 0.005,
+			"initial_allocation_pct": 0.01,
 			"min_allocation_usd": 0.5,
-			"risk_multiplier": 0.5
+			"max_concurrent_positions": 3
 		},
 		"timing": {
 			"main_loop_delay_seconds": 0.5,
@@ -435,7 +437,7 @@ class CryptoAPITrading:
         # DCA state tracking: tracks which DCA stages have been triggered for each coin in the current trade
         # Stages are tracked by index (0, 1, 2, ...) rather than percentage values for cleaner neural/hardcoded logic
         self.dca_levels_triggered = {}  # { "BTC": [0, 1, 2], "ETH": [0], ... }
-        self.dca_levels = trading_cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0])
+        self.dca_levels = trading_cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0, -40.0])
 
         # Trailing profit margin per-coin state: each coin maintains isolated trailing stop state.
         # The trailing line starts at the PM target (5% no DCA, 2.5% with DCA) and follows price
@@ -446,6 +448,7 @@ class CryptoAPITrading:
         self.trailing_gap_pct = trading_cfg.get("profit_margin", {}).get("trailing_gap_pct", 0.5)
         self.pm_start_pct_no_dca = trading_cfg.get("profit_margin", {}).get("target_no_dca_pct", 5.0)
         self.pm_start_pct_with_dca = trading_cfg.get("profit_margin", {}).get("target_with_dca_pct", 2.5)
+        self.stop_loss_pct = trading_cfg.get("profit_margin", {}).get("stop_loss_pct", -50.0)
 
         # Calculate initial cost basis for all holdings by examining recent buy order execution prices
         # Uses LIFO reconstruction to match current quantities with most recent purchase prices
@@ -493,6 +496,9 @@ class CryptoAPITrading:
         # Cycle-level DCA tracking: prevents double-triggering the same DCA stage within a single
         # manage_trades() iteration when both neural and hardcoded conditions are met simultaneously
         self._dca_triggered_this_cycle = {}  # { "BTC": {0, 1, 2}, "ETH": {0}, ... }
+        
+        # Heartbeat tracking: periodic status messages to show trader is alive
+        self._last_heartbeat = 0
 
     def _atomic_write_json(self, path: str, data: dict) -> None:
         """Write JSON data atomically to prevent corruption from interrupted writes.
@@ -1793,6 +1799,14 @@ class CryptoAPITrading:
                 "percent_in_trade": float(in_use),
             }
 
+        # Periodic heartbeat message (every 90 seconds)
+        current_time = time.time()
+        if current_time - self._last_heartbeat >= 90:
+            self._last_heartbeat = current_time
+            num_positions = len([h for h in holdings_list if h.get("asset_code") != "USDC"])
+            cb_status = "PAUSED" if _circuit_breaker["is_open"] else "ACTIVE"
+            print(f"[TRADER] Status: {cb_status} | Positions: {num_positions} | Buying Power: ${buying_power:,.2f} | Total Value: ${total_account_value:,.2f}", flush=True)
+
         os.system('cls' if os.name == 'nt' else 'clear')
 
         positions = {}
@@ -2006,6 +2020,40 @@ class CryptoAPITrading:
             else:
                 print(f"[{symbol}] Trailing PM: N/A (no cost basis)")
             print()
+
+            # STOP-LOSS CHECK: Emergency exit if loss exceeds configured threshold
+            # This runs BEFORE trailing PM to catch catastrophic drops immediately
+            if avg_cost_basis > 0 and gain_loss_percentage_sell <= self.stop_loss_pct:
+                print(f"[{symbol}] ⚠ STOP-LOSS TRIGGERED: Loss {gain_loss_percentage_sell:.2f}% exceeds limit {self.stop_loss_pct:.2f}%")
+                print(f"[{symbol}] Emergency sell at ${current_sell_price:.8f} (cost basis ${avg_cost_basis:.8f}){sim_prefix()}")
+                debug_print(f"[DEBUG] TRADER: Stop-loss triggered for {symbol}, loss={gain_loss_percentage_sell:.2f}%")
+                
+                response = self.place_sell_order(
+                    str(uuid.uuid4()),
+                    "sell",
+                    "market",
+                    full_symbol,
+                    quantity,
+                    expected_price=current_sell_price,
+                    avg_cost_basis=avg_cost_basis,
+                    pnl_pct=gain_loss_percentage_sell,
+                    tag="STOP_LOSS",
+                )
+
+                if response and isinstance(response, dict) and "errors" not in response:
+                    trades_made = True
+                    self.trailing_pm.pop(symbol, None)  # clear trailing state
+                    self._reset_dca_window_for_trade(symbol, sold=True)
+                    print(f"[{symbol}] Stop-loss sell successful: {quantity:.8f} {symbol}{sim_prefix()}")
+                    debug_print(f"[DEBUG] TRADER: Stop-loss sell successful for {symbol}")
+                    trading_cfg = _load_trading_config()
+                    post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 5)
+                    time.sleep(post_delay)
+                    holdings = self.get_holdings()
+                    continue
+                else:
+                    print(f"⚠ [{symbol}] WARNING: Stop-loss sell order FAILED")
+                    debug_print(f"[DEBUG] TRADER: Stop-loss sell failed for {symbol}, response: {response}")
 
             # Trailing profit margin logic with 0.5% trail gap. The PM "start line" is the normal
             # 5% or 2.5% line depending on whether DCA occurred. Trailing activates once price
@@ -2256,10 +2304,9 @@ class CryptoAPITrading:
             return
 
         trading_cfg = _load_trading_config()
-        allocation_pct = trading_cfg.get("position_sizing", {}).get("initial_allocation_pct", 0.005)
+        allocation_pct = trading_cfg.get("position_sizing", {}).get("initial_allocation_pct", 0.01)
         min_alloc = trading_cfg.get("position_sizing", {}).get("min_allocation_usd", 0.5)
-        risk_multiplier = trading_cfg.get("position_sizing", {}).get("risk_multiplier", 0.5)  # Fractional Kelly (research-optimized)
-        allocation_in_usd = total_account_value * (allocation_pct / len(crypto_symbols)) * risk_multiplier
+        allocation_in_usd = total_account_value * (allocation_pct / len(crypto_symbols))
         if allocation_in_usd < min_alloc:
             allocation_in_usd = min_alloc
 
@@ -2282,6 +2329,16 @@ class CryptoAPITrading:
 
             # Skip if already held
             if full_symbol in holding_full_symbols:
+                start_index += 1
+                continue
+
+            # Check max concurrent positions limit
+            trading_cfg = _load_trading_config()
+            max_positions = trading_cfg.get("position_sizing", {}).get("max_concurrent_positions", 3)
+            current_positions = len([h for h in holdings.get("results", []) if h.get("asset_code") != "USDC"])
+            
+            if current_positions >= max_positions:
+                debug_print(f"[DEBUG] TRADER: Skipping {base_symbol} entry - at max positions ({current_positions}/{max_positions})")
                 start_index += 1
                 continue
 
@@ -2362,6 +2419,9 @@ class CryptoAPITrading:
             pass
 
     def run(self):
+        print("[TRADER] Starting main loop...\n", flush=True)
+        print(f"[TRADER] Monitoring {len(crypto_symbols)} coins: {', '.join(crypto_symbols)}", flush=True)
+        print(f"[TRADER] Heartbeat interval: 90 seconds\n", flush=True)
         while True:
             try:
                 self.manage_trades()

@@ -66,7 +66,8 @@ from contextlib import contextmanager
 
 # Ensure clean console output (avoid encoding issues)
 try:
-	sys.stdout.reconfigure(encoding='utf-8')
+	sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+	sys.stderr.reconfigure(encoding='utf-8', line_buffering=True)
 except Exception:
 	pass  # Not all systems support reconfigure; gracefully degrade
 
@@ -197,14 +198,14 @@ def robinhood_current_ask(symbol: str) -> float:
                 with open(key_path, "rb") as f:
                     api_key = _decrypt_with_dpapi(f.read())
         except Exception as e:
-            print(f"⚠ [Thinker] Warning: Failed to read encrypted API key: {e}")
+            print(f"⚠ [Thinker] Warning: Failed to read encrypted API key: {e}", flush=True)
         
         try:
             if os.path.isfile(secret_path):
                 with open(secret_path, "rb") as f:
                     priv_b64 = _decrypt_with_dpapi(f.read())
         except Exception as e:
-            print(f"⚠ [Thinker] Warning: Failed to read encrypted private key: {e}")
+            print(f"⚠ [Thinker] Warning: Failed to read encrypted private key: {e}", flush=True)
 
         if not api_key or not priv_b64:
             raise RuntimeError(
@@ -221,7 +222,7 @@ def restart_program():
 	try:
 		os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
 	except Exception as e:
-		print(f'Error during program restart: {e}')
+		print(f'Error during program restart: {e}', flush=True)
 
 # Utility: PrintException prints a helpful one-line context for exceptions
 # by locating the source file/line and printing the offending line. This
@@ -249,7 +250,7 @@ def PrintException():
 	linecache.checkcache(filename)
 	line = linecache.getline(filename, lineno, f.f_globals)
 	msg = 'EXCEPTION IN (LINE {} "{}"): {}'.format(lineno, line.strip(), exc_obj)
-	print(msg)
+	print(msg, flush=True)
 	# Always log exceptions to file (even without debug mode)
 	try:
 		import datetime
@@ -294,7 +295,7 @@ def _is_debug_mode() -> bool:
 def debug_print(msg: str):
 	"""Print debug message only if debug mode is enabled, also log to file"""
 	if _is_debug_mode():
-		print(msg)
+		print(msg, flush=True)
 		# Also write to debug log file
 		try:
 			import datetime
@@ -330,14 +331,14 @@ def handle_network_error(operation: str, error: Exception):
 		operation: Description of the failed operation for logging (e.g., "KuCoin candle fetch")
 		error: The exception that triggered the failure
 	"""
-	print(f"\n{'='*60}")
-	print(f"❌ NETWORK ERROR: {operation} failed")
-	print(f"Error: {type(error).__name__}: {str(error)[:200]}")
-	print(f"The process will exit. Please check:")
-	print(f"  1. Your internet connection")
-	print(f"  2. API service status (KuCoin/Robinhood)")
-	print(f"  3. Enable debug_mode in gui_settings.json for more details")
-	print(f"{'='*60}\n")
+	print(f"\n{'='*60}", flush=True)
+	print(f"❌ NETWORK ERROR: {operation} failed", flush=True)
+	print(f"Error: {type(error).__name__}: {str(error)[:200]}", flush=True)
+	print(f"The process will exit. Please check:", flush=True)
+	print(f"  1. Your internet connection", flush=True)
+	print(f"  2. API service status (KuCoin/Robinhood)", flush=True)
+	print(f"  3. Enable debug_mode in gui_settings.json for more details", flush=True)
+	print(f"{'='*60}\n", flush=True)
 	time.sleep(_get_sleep_timing("sleep_startup_error"))
 	sys.exit(1)
 
@@ -489,6 +490,14 @@ def _coin_is_trained(sym: str) -> bool:
 		
 		if ts <= 0:
 			return False
+		
+		# Timestamp is fresh - now validate that actual training files exist
+		# This prevents processing a coin where training was interrupted or files deleted
+		is_valid, missing_tfs = _validate_coin_training(sym)
+		if not is_valid:
+			debug_print(f"[DEBUG] {sym}: Training files incomplete despite fresh timestamp. Missing: {', '.join(missing_tfs)}")
+			return False
+		
 		return (time.time() - ts) <= _TRAINING_STALE_SECONDS
 	except OSError as e:
 		debug_print(f"[DEBUG] {sym}: Failed to read trainer_last_training_time.txt: {e}")
@@ -514,6 +523,20 @@ def _atomic_write_json(path: str, data: dict) -> None:
 		os.replace(tmp, path)
 	except Exception:
 		pass
+
+def _write_priority_coin(coin: str, distance_pct: float, reason: str) -> None:
+	"""Write priority coin information to hub_data/priority_coin.txt for auto-switch feature."""
+	try:
+		priority_path = os.path.join(HUB_DIR, "priority_coin.txt")
+		data = {
+			"coin": coin,
+			"distance_pct": distance_pct,
+			"reason": reason,
+			"timestamp": time.time()
+		}
+		_atomic_write_json(priority_path, data)
+	except Exception:
+		pass  # Don't crash thinker if priority file write fails
 
 def _write_runner_ready(ready: bool, stage: str, ready_coins=None, total_coins: int = 0) -> None:
 	obj = {
@@ -542,11 +565,45 @@ distance = 0.5
 tf_choices = REQUIRED_THINKER_TIMEFRAMES
 
 # Load pattern_size from training_settings.json
-training_settings_path = os.path.join(os.path.dirname(__file__), "training_settings.json")
-with open(training_settings_path, 'r') as f:
-	training_settings = json.load(f)
-	PATTERN_SIZE = training_settings["pattern_size"]
-	print(f"[THINKER] Loaded pattern_size={PATTERN_SIZE} from training_settings.json")
+try:
+	training_settings_path = os.path.join(os.path.dirname(__file__), "training_settings.json")
+	with open(training_settings_path, 'r') as f:
+		training_settings = json.load(f)
+		PATTERN_SIZE = training_settings["pattern_size"]
+		print(f"Loaded pattern_size={PATTERN_SIZE} from training_settings.json", flush=True)
+except Exception as e:
+	# Print error immediately (before any other initialization) so Hub can capture it
+	print(f"FATAL ERROR: Failed to load training_settings.json: {e}", flush=True)
+	print(f"Current working directory: {os.getcwd()}", flush=True)
+	print(f"Script location: {os.path.dirname(__file__)}", flush=True)
+	print(f"Expected path: {training_settings_path}", flush=True)
+	sys.exit(1)
+
+# Load trading config for signal thresholds
+_TRADING_SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "trading_settings.json")
+_trading_config_cache = {"mtime": 0, "config": {"entry_signals": {"long_signal_min": 4, "short_signal_max": 0}}}
+
+def _load_trading_config() -> dict:
+	"""Load trading_settings.json with mtime caching"""
+	try:
+		if not os.path.isfile(_TRADING_SETTINGS_PATH):
+			return dict(_trading_config_cache["config"])
+		mtime = os.path.getmtime(_TRADING_SETTINGS_PATH)
+		if _trading_config_cache["mtime"] == mtime:
+			return dict(_trading_config_cache["config"])
+		with open(_TRADING_SETTINGS_PATH, "r", encoding="utf-8") as f:
+			data = json.load(f) or {}
+		config = dict(_trading_config_cache["config"])
+		for key in data:
+			if isinstance(data[key], dict) and isinstance(config.get(key), dict):
+				config[key].update(data[key])
+			else:
+				config[key] = data[key]
+		_trading_config_cache["mtime"] = mtime
+		_trading_config_cache["config"] = config
+		return dict(config)
+	except Exception:
+		return dict(_trading_config_cache["config"])
 
 def new_coin_state():
 	"""Create initial state dictionary for a newly tracked coin.
@@ -582,6 +639,7 @@ def new_coin_state():
 		'messaged': ['no'] * len(tf_choices),
 		'updated': [0] * len(tf_choices),
 		'perfects': ['active'] * len(tf_choices),
+		'match_qualities': [100.0] * len(tf_choices),  # Match quality percentage (100 = excellent, <50 = weak)
 		'training_issues': [0] * len(tf_choices),
 
 		# readiness gating (no placeholder-number checks; this is process-based)
@@ -593,6 +651,8 @@ def new_coin_state():
 states = {}
 
 display_cache = {sym: f"[{sym}] Starting...\n[{sym}] Initializing predictions for all timeframes" for sym in CURRENT_COINS}
+summary_cache = {}  # Stores compact summary data for each coin
+_last_printed_bounds_version = {}  # Track per-coin to avoid printing duplicate displays
 
 def _validate_coin_training(coin: str) -> tuple:
 	"""Validate that a coin has all required timeframe data files present and non-empty.
@@ -615,7 +675,11 @@ def _validate_coin_training(coin: str) -> tuple:
 	missing = []
 	folder = coin_folder(coin)
 	
+	debug_print(f"[DEBUG] THINKER: Validating {coin} training in folder: {folder}")
+	debug_print(f"[DEBUG] THINKER: Current working directory: {os.getcwd()}")
+	
 	if not os.path.isdir(folder):
+		debug_print(f"[DEBUG] THINKER: Folder does not exist: {folder}")
 		return (False, REQUIRED_THINKER_TIMEFRAMES)
 	
 	for tf in REQUIRED_THINKER_TIMEFRAMES:
@@ -626,25 +690,47 @@ def _validate_coin_training(coin: str) -> tuple:
 		threshold_file = os.path.join(folder, f"neural_perfect_threshold_{tf}.dat")
 		
 		# Check if all required files exist and are non-empty
-		for fpath in [memory_file, weight_file, weight_high_file, weight_low_file, threshold_file]:
+		# Threshold files only contain a single number (can be 4 bytes), so check for 1+ bytes
+		# Memory/weight files need at least 10 bytes
+		files_to_check = [
+			(memory_file, 10),
+			(weight_file, 10),
+			(weight_high_file, 10),
+			(weight_low_file, 10),
+			(threshold_file, 1)
+		]
+		
+		for fpath, min_size in files_to_check:
 			if not os.path.isfile(fpath):
+				debug_print(f"[DEBUG] THINKER: {coin} {tf} - File not found: {fpath}")
 				if tf not in missing:
 					missing.append(tf)
 				break
 			try:
-				if os.path.getsize(fpath) < 10:  # At least 10 bytes
+				fsize = os.path.getsize(fpath)
+				if fsize < min_size:
+					debug_print(f"[DEBUG] THINKER: {coin} {tf} - File too small ({fsize} bytes, need {min_size}): {fpath}")
 					if tf not in missing:
 						missing.append(tf)
 					break
-			except Exception:
+			except Exception as e:
+				debug_print(f"[DEBUG] THINKER: {coin} {tf} - Error checking file size: {fpath}, error: {e}")
 				if tf not in missing:
 					missing.append(tf)
 				break
+	
+	if len(missing) == 0:
+		debug_print(f"[DEBUG] THINKER: {coin} validation passed - all timeframes complete")
+	else:
+		debug_print(f"[DEBUG] THINKER: {coin} validation failed - missing: {', '.join(missing)}")
 	
 	return (len(missing) == 0, missing)
 
 # Track which coins have produced REAL predicted levels (not placeholder 0.0 / inf)
 _ready_coins = set()
+
+# Track which coins have already shown their "Starting..." message (prevent repetitive output)
+_startup_messages_shown = set()
 
 # Readiness detection: the runner is considered "READY" only when it's producing real prediction
 # messages (WITHIN/LONG/SHORT) instead of placeholder messages (INACTIVE/Starting). This ensures
@@ -714,6 +800,10 @@ def _sync_coins_from_settings():
 	for sym in removed:
 		try:
 			_ready_coins.discard(sym)
+		except Exception:
+			pass  # Best-effort cleanup; OK if already removed
+		try:
+			_startup_messages_shown.discard(sym)
 		except Exception:
 			pass  # Best-effort cleanup; OK if already removed
 		try:
@@ -940,6 +1030,7 @@ def step_coin(sym: str):
 		tf_times = st['tf_times']
 		tf_choice_index = st['tf_choice_index']
 
+		# Copy arrays from state to prevent in-place modifications from accumulating
 		tf_update = st['tf_update']
 		messages = st['messages']
 		last_messages = st['last_messages']
@@ -966,7 +1057,9 @@ def step_coin(sym: str):
 		messaged = st['messaged']
 		updated = st['updated']
 		perfects = st['perfects']
-		training_issues = st.get('training_issues', [0] * len(tf_choices))
+		# Copy arrays from state to prevent in-place modifications
+		match_qualities = st.get('match_qualities', [100.0] * len(tf_choices)) if st.get('match_qualities') else [100.0] * len(tf_choices)
+		training_issues = st.get('training_issues', [0] * len(tf_choices)) if st.get('training_issues') else [0] * len(tf_choices)
 		# keep training_issues aligned to tf_choices
 		if len(training_issues) < len(tf_choices):
 			training_issues.extend([0] * (len(tf_choices) - len(training_issues)))
@@ -1175,6 +1268,7 @@ def step_coin(sym: str):
 					mem_ind += 1
 					continue
 
+				# ALWAYS accept patterns that meet threshold for match counting
 				if diff_avg <= perfect_threshold:
 					any_perfect = 'yes'
 					patterns_matched += 1
@@ -1208,15 +1302,31 @@ def step_coin(sym: str):
 
 				# Check if we've processed all memory patterns
 				if mem_ind >= len(memory_list):
+					# Calculate match quality: 100% = perfect match (0% diff), logarithmic decay (never 0%)
+					# Quality formula: 100 / (1 + (closest_diff / perfect_threshold))
+					# This gives 100% at 0 diff, 50% at threshold, 25% at 3x threshold, 10% at 9x threshold
+					if closest_diff < float('inf'):
+						match_quality = 100 / (1 + (closest_diff / perfect_threshold))
+					else:
+						match_quality = 0.0  # Only 0 if no patterns exist at all
+					match_qualities[tf_choice_index] = match_quality
+					
 					if any_perfect == 'no':
-						debug_print(f"[DEBUG] {sym} {tf_choices[tf_choice_index]}: No patterns matched threshold {perfect_threshold:.2f}%. Current pattern: {[f'{v:.2f}%' for v in current_pattern]}, Checked: {patterns_checked}, Skipped: {patterns_skipped}, Closest: {closest_diff:.2f}%")
-						final_moves = 0.0
-						high_final_moves = 0.0
-						low_final_moves = 0.0
-						perfects[tf_choice_index] = 'inactive'
+						debug_print(f"[DEBUG] {sym} {tf_choices[tf_choice_index]}: No patterns matched threshold {perfect_threshold:.2f}%. Current pattern: {[f'{v:.2f}%' for v in current_pattern]}, Checked: {patterns_checked}, Skipped: {patterns_skipped}, Closest: {closest_diff:.2f}% (Quality: {match_quality:.0f}%)")
+						# ALWAYS generate predictions from closest patterns (even if they don't meet threshold)
+						if moves and high_moves and low_moves:
+							final_moves = sum(moves) / len(moves)
+							high_final_moves = sum(high_moves) / len(high_moves)
+							low_final_moves = sum(low_moves) / len(low_moves)
+							perfects[tf_choice_index] = 'active'  # Mark active even if match quality is low
+						else:
+							final_moves = 0.0
+							high_final_moves = 0.0
+							low_final_moves = 0.0
+							perfects[tf_choice_index] = 'inactive'
 					elif moves and high_moves and low_moves:
 						# Only calculate averages if lists are non-empty
-						debug_print(f"[DEBUG] {sym} {tf_choices[tf_choice_index]}: Matched {patterns_matched} patterns. Checked: {patterns_checked}, Skipped: {patterns_skipped}")
+						debug_print(f"[DEBUG] {sym} {tf_choices[tf_choice_index]}: Matched {patterns_matched} patterns. Checked: {patterns_checked}, Skipped: {patterns_skipped} (Quality: {match_quality:.0f}%)")
 						final_moves = sum(moves) / len(moves)
 						high_final_moves = sum(high_moves) / len(high_moves)
 						low_final_moves = sum(low_moves) / len(low_moves)
@@ -1367,7 +1477,7 @@ def step_coin(sym: str):
 
 				# (original comparisons)
 				if current > high_bound_prices[inder] and high_tf_prices[inder] != low_tf_prices[inder]:
-					message = 'SHORT on ' + tf_choices[inder] + ' timeframe. ' + format(((high_bound_prices[inder] - current) / abs(current)) * 100, '.8f') + ' High Boundary: ' + str(high_bound_prices[inder])
+					message = 'SHORT on ' + tf_choices[inder] + ' timeframe.\t' + format(((high_bound_prices[inder] - current) / abs(current)) * 100, '.8f') + '\tHigh: ' + str(high_bound_prices[inder])
 					if messaged[inder] != 'yes':
 						messaged[inder] = 'yes'
 					margins[inder] = ((high_tf_prices[inder] - current) / abs(current)) * 100
@@ -1383,7 +1493,7 @@ def step_coin(sym: str):
 					tf_sides[inder] = 'short'
 
 				elif current < low_bound_prices[inder] and high_tf_prices[inder] != low_tf_prices[inder]:
-					message = 'LONG on ' + tf_choices[inder] + ' timeframe. ' + format(((low_bound_prices[inder] - current) / abs(current)) * 100, '.8f') + ' Low Boundary: ' + str(low_bound_prices[inder])
+					message = 'LONG on ' + tf_choices[inder] + ' timeframe.\t' + format(((low_bound_prices[inder] - current) / abs(current)) * 100, '.8f') + '\tLow: ' + str(low_bound_prices[inder])
 					if messaged[inder] != 'yes':
 						messaged[inder] = 'yes'
 
@@ -1402,11 +1512,11 @@ def step_coin(sym: str):
 				else:
 					if perfects[inder] == 'inactive':
 						if training_issues[inder] == 1:
-							message = 'INACTIVE (training data issue) on ' + tf_choices[inder] + ' timeframe.' + ' Low Boundary: ' + str(low_bound_prices[inder]) + ' High Boundary: ' + str(high_bound_prices[inder])
+							message = 'INACTIVE (training data issue) on ' + tf_choices[inder] + ' timeframe.\tLow: ' + str(low_bound_prices[inder]) + '\tHigh: ' + str(high_bound_prices[inder])
 						else:
-							message = 'INACTIVE on ' + tf_choices[inder] + ' timeframe.' + ' Low Boundary: ' + str(low_bound_prices[inder]) + ' High Boundary: ' + str(high_bound_prices[inder])
+							message = 'INACTIVE on ' + tf_choices[inder] + ' timeframe.\tLow: ' + str(low_bound_prices[inder]) + '\tHigh: ' + str(high_bound_prices[inder])
 					else:
-						message = 'WITHIN on ' + tf_choices[inder] + ' timeframe.' + ' Low Boundary: ' + str(low_bound_prices[inder]) + ' High Boundary: ' + str(high_bound_prices[inder])
+						message = 'WITHIN on ' + tf_choices[inder] + ' timeframe.\tLow: ' + str(low_bound_prices[inder]) + '\tHigh: ' + str(high_bound_prices[inder])
 
 					margins[inder] = 0.0
 
@@ -1429,8 +1539,10 @@ def step_coin(sym: str):
 			low_bound_prices = []
 			high_bound_prices = []
 			while True:
-				new_low_price = low_tf_prices[price_list_index] - (low_tf_prices[price_list_index] * (distance / 100))
-				new_high_price = high_tf_prices[price_list_index] + (high_tf_prices[price_list_index] * (distance / 100))
+				pred_low_val = low_tf_prices[price_list_index]
+				pred_high_val = high_tf_prices[price_list_index]
+				new_low_price = pred_low_val - (pred_low_val * (distance / 100))
+				new_high_price = pred_high_val + (pred_high_val * (distance / 100))
 				if perfects[price_list_index] != 'inactive':
 					low_bound_prices.append(new_low_price)
 					high_bound_prices.append(new_high_price)
@@ -1522,10 +1634,27 @@ def step_coin(sym: str):
 			# bump bounds_version now that we've computed a new set of prediction bounds
 			st['bounds_version'] = bounds_version_used_for_messages + 1
 
+			# Write boundaries with timeframe labels for chart display
+			# Format: "1h:93524.5 2h:92100.0 4h:91200.0 ..."
+			tf_labels = ['1h', '2h', '4h', '8h', '12h', '1d', '1w']
+			low_labeled = []
+			high_labeled = []
+			for sorted_pos in range(len(new_low_bound_prices)):
+				original_pos = og_low_index_list[sorted_pos]
+				if original_pos < len(tf_labels):
+					tf_label = tf_labels[original_pos]
+					low_labeled.append(f"{tf_label}:{new_low_bound_prices[sorted_pos]}")
+				
+			for sorted_pos in range(len(new_high_bound_prices)):
+				original_pos = og_high_index_list[sorted_pos]
+				if original_pos < len(tf_labels):
+					tf_label = tf_labels[original_pos]
+					high_labeled.append(f"{tf_label}:{new_high_bound_prices[sorted_pos]}")
+				
 			with open('low_bound_prices.html', 'w+') as file:
-				file.write(str(new_low_bound_prices).replace("', '", " ").replace("[", "").replace("]", "").replace("'", ""))
+				file.write(' '.join(low_labeled))
 			with open('high_bound_prices.html', 'w+') as file:
-				file.write(str(new_high_bound_prices).replace("', '", " ").replace("[", "").replace("]", "").replace("'", ""))
+				file.write(' '.join(high_labeled))
 
 			# cache display text for this coin (main loop prints everything on one screen)
 			try:
@@ -1535,12 +1664,18 @@ def step_coin(sym: str):
 				withins = sum(1 for msg in messages if 'WITHIN' in msg)
 				longs_count = tf_sides.count('long')
 				shorts_count = tf_sides.count('short')
-				
-				# Determine overall signal
-				if longs_count >= 3:
+					
+				# Load trading config to get signal thresholds (match trader logic)
+				trading_cfg = _load_trading_config()
+				long_min = max(1, min(7, int(trading_cfg.get("entry_signals", {}).get("long_signal_min", 4))))
+				# For SHORT display, use same threshold as LONG for consistency
+				# (Trader uses short_signal_max as a filter, not an entry trigger)
+					
+				# Determine overall signal (use config thresholds so display matches trader behavior)
+				if longs_count >= long_min:
 					signal_status = "LONG"
 					signal_indicator = "[v]"
-				elif shorts_count >= 3:
+				elif shorts_count >= long_min:
 					signal_status = "SHORT"
 					signal_indicator = "[^]"
 				elif withins > 0:
@@ -1549,16 +1684,25 @@ def step_coin(sym: str):
 				else:
 					signal_status = "INACTIVE"
 					signal_indicator = "[o]"
-				
+					
 				# Format current price with proper decimals
 				price_str = f"${current:,.2f}" if current < 1000 else f"${current:,.0f}"
-				
+					
+				# Add DCA signal info
+				active_margins = [m for m in margins if m != 0]
+				if len(active_margins) > 0:
+					pm_value = sum(active_margins) / len(active_margins)
+					pm_display = f"{pm_value:.2%}"
+				else:
+					pm_display = "--"
+
 				# Build output lines
 				lines = []
-				lines.append(f"[{sym}] Current Price: {price_str}")
-				lines.append(f"[{sym}] Signal: {signal_indicator} {signal_status} (Long:{longs_count} Short:{shorts_count} Within:{withins})")
+				current_time = datetime.now().strftime("%H:%M:%S")
+				lines.append(f"\n[{sym}] Current Price at {current_time}: {price_str}")
+				lines.append(f"[{sym}] Signal: {signal_indicator} {signal_status} (L/S/W:{longs_count}/{shorts_count}/{withins})   Profit Margin: {pm_display}")
 				lines.append(f"[{sym}] Pattern Matching: {actives}/7 active, {inactives}/7 inactive")
-				
+					
 				# Build timeframe rows
 				for i, tf in enumerate(tf_choices):
 					# Get status
@@ -1567,42 +1711,81 @@ def step_coin(sym: str):
 					elif 'SHORT' in messages[i]:
 						status = "SHORT"
 					elif 'WITHIN' in messages[i]:
-						status = "WITHIN"
+						status = "HODL"
 					elif 'INACTIVE' in messages[i]:
 						status = "INACTIVE"
 					else:
-						status = "Starting"
-					
+						status = "STARTING"
+						
 					# Calculate distance to boundaries as percentage
 					low_bound = low_bound_prices[i]
 					high_bound = high_bound_prices[i]
-					
+						
 					if low_bound != 0.0 and high_bound != float('inf'):
 						low_dist = ((current - low_bound) / current) * 100
 						high_dist = ((high_bound - current) / current) * 100
-						bounds_text = f"Low:{low_dist:+.1f}% High:{high_dist:+.1f}%"
+						bounds_text = f"Low:{low_dist:+5.1f}%   High:{high_dist:+5.1f}%"
 					elif low_bound != 0.0:
 						low_dist = ((current - low_bound) / current) * 100
-						bounds_text = f"Low:{low_dist:+.1f}% High:--"
+						bounds_text = f"Low:{low_dist:+5.1f}%   High:    --"
 					elif high_bound != float('inf'):
 						high_dist = ((high_bound - current) / current) * 100
-						bounds_text = f"Low:-- High:{high_dist:+.1f}%"
+						bounds_text = f"Low: ----   High:{high_dist:+5.1f}%"
 					else:
 						bounds_text = "No boundaries"
-					
-					lines.append(f"[{sym}]   {tf:>6s}: {status:8s} {bounds_text}")
-				
-				# Add DCA signal info
-				active_margins = [m for m in margins if m != 0]
-				pm_value = sum(active_margins) / len(active_margins) if len(active_margins) > 0 else 0.25
-				lines.append(f"[{sym}] DCA Signals: Long={longs_count} Short={shorts_count} | Profit Margin: {pm_value:.2%}")
-				
+						
+					# Add match quality indicator (ASCII only for Hub display compatibility)
+					quality = match_qualities[i] if i < len(match_qualities) else 100.0
+					if quality >= 67:
+						quality_icon = f"Signal: {quality:.0f}% STRONG"  # Excellent match
+					elif quality >= 33:
+						quality_icon = f"Signal: {quality:.0f}% MARGINAL"  # Good match
+					else:
+						quality_icon = f"Signal: {quality:.0f}% WEAK"  # Weak match
+						
+					lines.append(f"[{sym}]  {tf:>6s}: {status:6s} {bounds_text}   {quality_icon}")
+								
 				# Combine all parts
 				display_cache[sym] = '\n'.join(lines)
-
-				# The GUI-visible messages were generated using the bounds_version that was in state at the
-				# start of this full-sweep (before we rebuilt bounds above).
-				st['last_display_bounds_version'] = bounds_version_used_for_messages
+				
+				# Mark this bounds_version as needing display update
+				st['last_display_bounds_version'] = st.get('bounds_version', 0)
+					
+				# Calculate summary data for this coin
+				# Load trading config to get required signal thresholds
+				trading_cfg = _load_trading_config()
+				long_signal_min = max(1, min(7, int(trading_cfg.get("entry_signals", {}).get("long_signal_min", 4))))
+					
+				# Find Nth low boundary below current (Next Long trigger)
+				# Need long_signal_min timeframes showing LONG, so find the Nth-highest low_bound below current
+				valid_lows = [low_bound_prices[i] for i in range(len(low_bound_prices)) if low_bound_prices[i] != 0.0 and low_bound_prices[i] < current]
+				if len(valid_lows) >= long_signal_min:
+					# Sort descending (highest to lowest), take the Nth one
+					valid_lows.sort(reverse=True)
+					long_trigger_price = valid_lows[long_signal_min - 1]
+					next_long_pct = ((long_trigger_price - current) / current) * 100
+				else:
+					next_long_pct = None
+					
+				# Find Nth high boundary above current (Next Short trigger)
+				# Need long_signal_min timeframes showing SHORT, so find the Nth-lowest high_bound above current
+				valid_highs = [high_bound_prices[i] for i in range(len(high_bound_prices)) if high_bound_prices[i] != float('inf') and high_bound_prices[i] > current]
+				if len(valid_highs) >= long_signal_min:
+					# Sort ascending (lowest to highest), take the Nth one
+					valid_highs.sort()
+					short_trigger_price = valid_highs[long_signal_min - 1]
+					next_short_pct = ((short_trigger_price - current) / current) * 100
+				else:
+					next_short_pct = None
+				
+				summary_cache[sym] = {
+					'price': current,
+					'price_str': price_str,
+					'signal': signal_status,
+					'next_long_pct': next_long_pct,
+					'next_short_pct': next_short_pct,
+					'pm_display': pm_display
+				}
 
 				# Only consider this coin "ready" once we've already rebuilt bounds at least once
 				# AND we're now printing messages generated from those rebuilt bounds.
@@ -1693,10 +1876,10 @@ def step_coin(sym: str):
 				tf_update_index += 1
 
 		# ====== save state back ======
-		# Only persist state if at least one timeframe has valid predictions
-		# (not all timeframes marked as having training issues)
+		debug_print(f"[DEBUG] {sym}: Saving state - tf_choice_index={tf_choice_index}")
+		# Only persist state if at least one timeframe has valid predictions (not all timeframes marked as having training issues)
 		all_timeframes_failed = all(training_issues[i] == 1 for i in range(len(tf_choices)))
-		
+	
 		if all_timeframes_failed:
 			debug_print(f"[DEBUG] {sym}: All timeframes failed - not persisting invalid state")
 			# Keep tf_choice_index to resume from correct position next cycle
@@ -1720,10 +1903,11 @@ def step_coin(sym: str):
 
 		st['high_tf_prices'] = high_tf_prices
 		st['low_tf_prices'] = low_tf_prices
-		st['tf_sides'] = tf_sides
-		st['messaged'] = messaged
 		st['updated'] = updated
 		st['perfects'] = perfects
+		st['tf_sides'] = tf_sides
+		st['messaged'] = messaged
+		st['match_qualities'] = match_qualities
 		st['training_issues'] = training_issues
 
 		states[sym] = st
@@ -1731,6 +1915,8 @@ def step_coin(sym: str):
 # Track first iteration for startup message
 _first_run = True
 _startup_message_shown = False
+
+print("Starting main loop...\n", flush=True)
 
 try:
 	while True:
@@ -1743,8 +1929,8 @@ try:
 		for _sym in coins_this_iteration:
 			step_coin(_sym)
 
-		# clear + re-print one combined screen (so you don't see old output above new)
-		os.system('cls' if os.name == 'nt' else 'clear')
+		# NOTE: Skip screen clearing when running as subprocess (Hub captures output to text widget)
+		# os.system('cls' if os.name == 'nt' else 'clear')
 
 		# Print header with system status
 		from datetime import datetime
@@ -1760,34 +1946,123 @@ try:
 				training_warnings.append(f"{_sym}: Missing {', '.join(missing_tfs)}")
 
 		if training_warnings:
-			print("⚠ WARNING: INCOMPLETE TRAINING DETECTED")
+			print("⚠ WARNING: INCOMPLETE TRAINING DETECTED", flush=True)
 			for warning in training_warnings:
-				print(f"  {warning}")
-			print(f"Required timeframes: {', '.join(REQUIRED_THINKER_TIMEFRAMES)}")
-			print("Predictions may be inaccurate until training is complete.")
-			print()
+				print(f"  {warning}", flush=True)
+			print(f"Required timeframes: {', '.join(REQUIRED_THINKER_TIMEFRAMES)}", flush=True)
+			print("Predictions may be inaccurate until training is complete.\n", flush=True)
 			_startup_message_shown = False  # Reset if warnings appear
 		else:
 			# Show startup message only on first successful validation
 			if _first_run and not _startup_message_shown:
-				print(f"✓ All training data validated | {ready_count}/{total_count} coins ready")
-				print("Ready to engage autopilot")
-				print()
 				_startup_message_shown = True
 
 		_first_run = False
 
 		# Print all coins' display output (use cached display from step_coin which includes symbol header)
+		# Only print when bounds_version changes to avoid repetitive output during timeframe cycling
+		any_coin_updated = False
 		for _sym in coins_this_iteration:
-			output = display_cache.get(_sym, f"[{_sym}] No data yet")
-			# Strip BOM, zero-width spaces, and other invisible Unicode
-			output = output.replace('\ufeff', '').replace('\u200b', '').replace('\u200c', '').replace('\u200d', '')
-			# Convert to ASCII only
-			output = output.encode('ascii', 'ignore').decode('ascii')
-			# Remove any remaining control characters except newline and tab
-			output = ''.join(ch for ch in output if ch.isprintable() or ch in '\n\t')
-			print(output)
-			print()  # Add spacing after each coin section
+			st = states.get(_sym)
+			if not st:
+				continue
+			
+			current_bounds_version = st.get('bounds_version', 0)
+			last_printed_version = _last_printed_bounds_version.get(_sym, -1)
+			
+			# Only print if bounds_version has changed (new predictions ready) or first startup
+			if current_bounds_version != last_printed_version:
+				_last_printed_bounds_version[_sym] = current_bounds_version
+				
+				output = display_cache.get(_sym, f"[{_sym}] No data yet")
+				
+				# Skip startup message if already shown for this coin (prevents repetitive "Starting..." spam)
+				if "Starting..." in output and "Initializing predictions" in output:
+					if _sym in _startup_messages_shown:
+						continue  # Already shown this startup message, skip it
+					else:
+						_startup_messages_shown.add(_sym)  # Mark as shown
+				
+				# Strip BOM, zero-width spaces, and other invisible Unicode
+				output = output.replace('\ufeff', '').replace('\u200b', '').replace('\u200c', '').replace('\u200d', '')
+				# Convert to ASCII only
+				output = output.encode('ascii', 'ignore').decode('ascii')
+				# Remove any remaining control characters except newline and tab
+				output = ''.join(ch for ch in output if ch.isprintable() or ch in '\n\t')
+				print(output, flush=True)
+				any_coin_updated = True  # Mark that we printed something
+		
+		# Print summary table only if at least one coin was updated this iteration
+		if any_coin_updated:
+			valid_summaries = [summary_cache.get(_sym) for _sym in coins_this_iteration if summary_cache.get(_sym) and 'price_str' in summary_cache.get(_sym)]
+			
+			if valid_summaries:
+				print("", flush=True)
+				current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+				print(f"Thinking Summary {current_time}", flush=True)
+				for _sym in coins_this_iteration:
+					summary = summary_cache.get(_sym)
+					if summary and 'price_str' in summary:
+						# Format distances to boundaries
+						if summary['next_long_pct'] is not None:
+							long_str = f"{summary['next_long_pct']:+.1f}%"
+						else:
+							long_str = "--"
+						
+						if summary['next_short_pct'] is not None:
+							short_str = f"{summary['next_short_pct']:+.1f}%"
+						else:
+							short_str = "--"
+						
+						print(f"[{_sym:3s}]  {summary['price_str']:>8s}  {summary['signal']:6s}  Next Buy: {long_str}  Next Exit: {short_str}  PM: {summary['pm_display']}", flush=True)
+		
+		# Priority detection for auto-switch feature
+		# Find the coin closest to a trigger (buy or exit), with tiebreakers
+		try:
+			trading_cfg = _load_trading_config()
+			if trading_cfg.get("auto_switch", {}).get("enabled", False):
+				priority_candidates = []
+				
+				for _sym in coins_this_iteration:
+					summary = summary_cache.get(_sym)
+					if not summary:
+						continue
+					
+					# Check distance to buy trigger (next_long_pct is negative, distance is abs value)
+					if summary['next_long_pct'] is not None:
+						coin_distance = abs(summary['next_long_pct'])
+						priority_candidates.append({
+							'coin': _sym,
+							'distance': coin_distance,
+							'reason': 'buy',
+							'price': summary['price']
+						})
+					
+					# Check distance to exit trigger (next_short_pct is positive, distance is abs value)
+					if summary['next_short_pct'] is not None:
+						coin_distance = abs(summary['next_short_pct'])
+						priority_candidates.append({
+							'coin': _sym,
+							'distance': coin_distance,
+							'reason': 'exit',
+							'price': summary['price']
+						})
+				
+				if priority_candidates:
+					# Sort by:
+					# 1. Closest distance (ascending)
+					# 2. Largest dollar value (descending) - using price as proxy
+					# 3. Coin order in list (ascending index)
+					priority_candidates.sort(key=lambda x: (
+						x['distance'],
+						-x['price'],
+						coins_this_iteration.index(x['coin']) if x['coin'] in coins_this_iteration else 999
+					))
+					
+					winner = priority_candidates[0]
+					_write_priority_coin(winner['coin'], winner['distance'], winner['reason'])
+		except Exception:
+			pass  # Don't crash thinker if priority detection fails
 		
 		# small sleep so you don't peg CPU when running many coins
 		time.sleep(_get_sleep_timing("sleep_main_loop"))
