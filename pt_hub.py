@@ -73,7 +73,7 @@ matplotlib.rcParams['font.family'] = 'sans-serif'
 matplotlib.rcParams['font.sans-serif'] = ['Segoe UI', 'Arial', 'DejaVu Sans']
 
 # Version: YY.MMDDHH (Year, Month, Day, Hour of last save)
-VERSION = "26.011113"
+VERSION = "26.011114"
 
 # Windows DPAPI encryption helpers
 def _encrypt_with_dpapi(data: str) -> bytes:
@@ -6261,8 +6261,8 @@ class ApolloHub(tk.Tk):
                     alloc_spread = min_alloc
 
                 required = alloc_spread * n  # initial buys for all coins
-                while spread_levels < total_dca_levels and required > 0.0 and (required * (1.0 + multiplier)) <= (total_val + 1e-9):
-                    required *= (1.0 + multiplier)
+                while spread_levels < total_dca_levels and required > 0.0 and (required * multiplier) <= (total_val + 1e-9):
+                    required *= multiplier
                     spread_levels += 1
 
                 # All DCA into a single coin
@@ -6271,8 +6271,8 @@ class ApolloHub(tk.Tk):
                     alloc_single = min_alloc
 
                 required = alloc_single  # initial buy for one coin
-                while single_levels < total_dca_levels and required > 0.0 and (required * (1.0 + multiplier)) <= (total_val + 1e-9):
-                    required *= (1.0 + multiplier)
+                while single_levels < total_dca_levels and required > 0.0 and (required * multiplier) <= (total_val + 1e-9):
+                    required *= multiplier
                     single_levels += 1
 
             # Calculate percentage of total DCA levels that can be afforded
