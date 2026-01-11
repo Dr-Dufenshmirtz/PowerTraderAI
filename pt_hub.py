@@ -2137,6 +2137,12 @@ class ApolloHub(tk.Tk):
         # Auto-switch pauses for 2 minutes after manual selection
         self._last_manual_chart_switch: float = 0.0  # Timestamp of last manual chart selection
         self._manual_override_duration: float = 120.0  # 2 minutes in seconds
+        
+        # Log Auto-Scroll State
+        # Tracks if user has scrolled away from bottom to prevent forced auto-scroll
+        self._trainer_log_user_scrolled_away = False
+        self._runner_log_user_scrolled_away = False
+        self._trader_log_user_scrolled_away = False
 
         # account value chart widget (created in _build_layout)
         self.account_chart = None
@@ -3028,7 +3034,19 @@ class ApolloHub(tk.Tk):
         )
 
         runner_scroll = ttk.Scrollbar(runner_tab, orient="vertical", command=self.runner_text.yview)
-        self.runner_text.configure(yscrollcommand=runner_scroll.set)
+        
+        # Bind scroll events to track user scrolling away from bottom
+        def _on_runner_scroll(*args):
+            """Track when user scrolls and check if they're at the bottom."""
+            try:
+                runner_scroll.set(*args)
+                yview = self.runner_text.yview()
+                at_bottom = (yview[1] >= 0.98)
+                self._runner_log_user_scrolled_away = not at_bottom
+            except Exception:
+                pass
+        
+        self.runner_text.configure(yscrollcommand=_on_runner_scroll)
         self.runner_text.pack(side="left", fill="both", expand=True)
         runner_scroll.pack(side="right", fill="y")
 
@@ -3050,7 +3068,19 @@ class ApolloHub(tk.Tk):
         )
 
         trader_scroll = ttk.Scrollbar(trader_tab, orient="vertical", command=self.trader_text.yview)
-        self.trader_text.configure(yscrollcommand=trader_scroll.set)
+        
+        # Bind scroll events to track user scrolling away from bottom
+        def _on_trader_scroll(*args):
+            """Track when user scrolls and check if they're at the bottom."""
+            try:
+                trader_scroll.set(*args)
+                yview = self.trader_text.yview()
+                at_bottom = (yview[1] >= 0.98)
+                self._trader_log_user_scrolled_away = not at_bottom
+            except Exception:
+                pass
+        
+        self.trader_text.configure(yscrollcommand=_on_trader_scroll)
         self.trader_text.pack(side="left", fill="both", expand=True)
         trader_scroll.pack(side="right", fill="y")
 
@@ -3086,6 +3116,8 @@ class ApolloHub(tk.Tk):
                         if not history[-1].endswith("\n"):
                             self.trainer_text.insert("end", "\n")
                         self.trainer_text.see("end")
+                        # Reset scroll flag when switching coins (start at bottom)
+                        self._trainer_log_user_scrolled_away = False
                 
                 # Sync with train_coin_combo if present
                 if hasattr(self, "train_coin_var"):
@@ -3116,7 +3148,24 @@ class ApolloHub(tk.Tk):
         )
 
         trainer_scroll = ttk.Scrollbar(trainer_tab, orient="vertical", command=self.trainer_text.yview)
-        self.trainer_text.configure(yscrollcommand=trainer_scroll.set)
+        
+        # Bind scroll events to track user scrolling away from bottom
+        def _on_trainer_scroll(*args):
+            """Track when user scrolls and check if they're at the bottom."""
+            try:
+                # Update the scrollbar
+                trainer_scroll.set(*args)
+                
+                # Check if at bottom (within 2% tolerance)
+                yview = self.trainer_text.yview()
+                at_bottom = (yview[1] >= 0.98)
+                
+                # Update flag: if at bottom, allow auto-scroll; if not, disable it
+                self._trainer_log_user_scrolled_away = not at_bottom
+            except Exception:
+                pass
+        
+        self.trainer_text.configure(yscrollcommand=_on_trainer_scroll)
         self.trainer_text.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=(0, 6))
         trainer_scroll.pack(side="right", fill="y", padx=(0, 6), pady=(0, 6))
 
@@ -3128,10 +3177,16 @@ class ApolloHub(tk.Tk):
                 # 0=Thinker, 1=Trader, 2=Trainers
                 if selected_index == 0:
                     self.runner_text.after(50, lambda: self.runner_text.yview_moveto(1.0))
+                    # Reset scroll flag when switching to this tab
+                    self._runner_log_user_scrolled_away = False
                 elif selected_index == 1:
                     self.trader_text.after(50, lambda: self.trader_text.yview_moveto(1.0))
+                    # Reset scroll flag when switching to this tab
+                    self._trader_log_user_scrolled_away = False
                 elif selected_index == 2:
                     self.trainer_text.after(50, lambda: self.trainer_text.yview_moveto(1.0))
+                    # Reset scroll flag when switching to this tab
+                    self._trainer_log_user_scrolled_away = False
             except Exception:
                 pass
         
@@ -3808,8 +3863,24 @@ class ApolloHub(tk.Tk):
     def toggle_all_scripts(self) -> None:
         neural_running = bool(self.proc_neural.proc and self.proc_neural.proc.poll() is None)
         trader_running = bool(self.proc_trader.proc and self.proc_trader.proc.poll() is None)
+        auto_mode_active = getattr(self, "_auto_mode_active", False)
 
-        # If BOTH are running, toggle means "stop trader only" (keep thinker running)
+        # If auto mode is active (training phase or running), stop everything
+        if auto_mode_active:
+            # Stop any trainers that are running as part of auto mode
+            pending_coins = getattr(self, "_auto_mode_pending_coins", set())
+            for coin in pending_coins:
+                lp = self.trainers.get(coin)
+                if lp and lp.info.proc and lp.info.proc.poll() is None:
+                    try:
+                        lp.info.proc.terminate()
+                    except Exception:
+                        pass
+            # Stop thinker/trader and clear auto mode flags
+            self.stop_all_scripts()
+            return
+
+        # If BOTH are running (but not in auto mode), toggle means "stop trader only" (keep thinker running)
         if neural_running and trader_running:
             self.stop_trader()
             return
@@ -4262,6 +4333,43 @@ class ApolloHub(tk.Tk):
         
         return near_stale
 
+    def _get_time_until_stale_hours(self, coin: str) -> float:
+        """
+        Returns hours until training becomes stale for a coin.
+        Returns 0.0 if already stale or no training data.
+        Returns the calculated hours if still valid.
+        """
+        training_cfg = _load_training_config()
+        staleness_days = training_cfg.get("staleness_days", 14)
+        max_age_seconds = staleness_days * 24 * 60 * 60
+        
+        folder = self.coin_folders.get(coin, "")
+        if not folder:
+            return 0.0
+        
+        stamp_path = os.path.join(folder, "trainer_last_training_time.txt")
+        try:
+            if not os.path.isfile(stamp_path):
+                return 0.0
+            
+            with open(stamp_path, "r", encoding="utf-8") as f:
+                raw = (f.read() or "").strip()
+            ts = float(raw) if raw else 0.0
+            
+            if ts <= 0:
+                return 0.0
+            
+            age_seconds = time.time() - ts
+            time_until_stale_seconds = max_age_seconds - age_seconds
+            
+            if time_until_stale_seconds <= 0:
+                return 0.0
+            
+            # Convert to hours
+            return time_until_stale_seconds / 3600.0
+        except Exception:
+            return 0.0
+
     def _running_trainers(self) -> List[str]:
         running: List[str] = []
 
@@ -4571,17 +4679,15 @@ class ApolloHub(tk.Tk):
             pass
 
     # UI refresh methods for updating logs, charts, and status displays
-    def _drain_queue_to_text(self, q: "queue.Queue[str]", txt: tk.Text, max_lines: int = 2500) -> None:
-        # Check if user is already at bottom before adding new text
-        was_at_bottom = False
-        try:
-            # Get the current view position
-            yview = txt.yview()
-            # If the bottom of the view is at or very near the end, consider it "at bottom"
-            was_at_bottom = (yview[1] >= 0.98)
-        except Exception:
-            was_at_bottom = True  # Default to auto-scroll if we can't determine
-
+    def _drain_queue_to_text(self, q: "queue.Queue[str]", txt: tk.Text, user_scrolled_away: bool, max_lines: int = 2500) -> None:
+        """Drain log queue to text widget with smart auto-scroll.
+        
+        Args:
+            q: Queue containing log messages
+            txt: Text widget to display messages
+            user_scrolled_away: Flag indicating if user has scrolled away from bottom
+            max_lines: Maximum number of lines to keep in widget
+        """
         try:
             changed = False
             while True:
@@ -4602,8 +4708,8 @@ class ApolloHub(tk.Tk):
             except Exception:
                 pass
             
-            # Only auto-scroll if user was already at the bottom
-            if was_at_bottom:
+            # Only auto-scroll if user hasn't scrolled away from bottom
+            if not user_scrolled_away:
                 try:
                     # Smoother scroll: use yview_moveto instead of see()
                     txt.update_idletasks()
@@ -5232,6 +5338,8 @@ class ApolloHub(tk.Tk):
                         if coin == current_coin:
                             self.trainer_text.insert("end", msg)
                             self.trainer_text.see("end")
+                            # Reset scroll flag when loading initial status
+                            self._trainer_log_user_scrolled_away = False
                         
                         continue
                     
@@ -5333,6 +5441,8 @@ class ApolloHub(tk.Tk):
                         if coin == current_coin:
                             self.trainer_text.insert("end", msg)
                             self.trainer_text.see("end")
+                            # Reset scroll flag when loading initial status
+                            self._trainer_log_user_scrolled_away = False
                     
                     except Exception as e:
                         # Silently skip files that can't be read
@@ -5354,6 +5464,8 @@ class ApolloHub(tk.Tk):
                 try:
                     self.runner_text.insert("end", msg)
                     self.runner_text.see("end")
+                    # Reset scroll flag when loading initial message
+                    self._runner_log_user_scrolled_away = False
                 except Exception:
                     pass
         except Exception as e:
@@ -5500,10 +5612,11 @@ class ApolloHub(tk.Tk):
         self.lbl_trader.config(text=f"Trader: {'RUNNING' if trader_running else 'STOPPED'}")
 
         # Start All is now a toggle (Start/Stop)
-        # Only show STOP when BOTH thinker and trader are running (full autopilot active)
+        # Show STOP when auto mode is active (training/thinking/trading) OR when both thinker and trader are running
         try:
             if hasattr(self, "btn_toggle_all") and self.btn_toggle_all:
-                if neural_running and trader_running:
+                auto_mode_active = getattr(self, "_auto_mode_active", False)
+                if auto_mode_active or (neural_running and trader_running):
                     self.btn_toggle_all.config(text="⏹ STOP AUTOPILOT")
                 else:
                     self.btn_toggle_all.config(text="🚀 ENGAGE AUTOPILOT")
@@ -5537,12 +5650,28 @@ class ApolloHub(tk.Tk):
                 self.lbl_training_overview.config(text="Training: READY (all trained)")
 
             # show each coin status (ONLY redraw the list if it actually changed)
-            sig = tuple((c, status_map.get(c, "N/A")) for c in self.coins)
+            # Include time-until-stale for trained coins
+            # Build signature with time-until-stale for TRAINED coins
+            sig_data = []
+            for c in self.coins:
+                st = status_map.get(c, "N/A")
+                if st == "TRAINED":
+                    hours_remaining = self._get_time_until_stale_hours(c)
+                    # Round to nearest hour for signature to avoid constant redraws
+                    sig_data.append((c, st, int(hours_remaining)))
+                else:
+                    sig_data.append((c, st, None))
+            
+            sig = tuple(sig_data)
             if getattr(self, "_last_training_sig", None) != sig:
                 self._last_training_sig = sig
                 self.training_list.delete(0, "end")
-                for c, st in sig:
-                    self.training_list.insert("end", f"{c}: {st.upper()}")
+                for c, st, hours in sig:
+                    # For trained coins, show time until stale
+                    if st == "TRAINED" and hours is not None and hours > 0:
+                        self.training_list.insert("end", f"{c}: {st.upper()} (T-{hours} HRS)")
+                    else:
+                        self.training_list.insert("end", f"{c}: {st.upper()}")
 
             # show gating hint (Auto Mode handles train->runner->ready->trader sequence)
             auto_mode_active = getattr(self, "_auto_mode_active", False)
@@ -5650,8 +5779,8 @@ class ApolloHub(tk.Tk):
             self._last_chart_refresh = now
 
         # drain logs into panes
-        self._drain_queue_to_text(self.runner_log_q, self.runner_text)
-        self._drain_queue_to_text(self.trader_log_q, self.trader_text)
+        self._drain_queue_to_text(self.runner_log_q, self.runner_text, self._runner_log_user_scrolled_away)
+        self._drain_queue_to_text(self.trader_log_q, self.trader_text, self._trader_log_user_scrolled_away)
 
         # trainer logs: show selected trainer output
         try:
@@ -5684,19 +5813,13 @@ class ApolloHub(tk.Tk):
                     
                     # If mismatch, refresh the entire display
                     if current_line_count != history_line_count:
-                        was_at_bottom = False
-                        try:
-                            yview = self.trainer_text.yview()
-                            was_at_bottom = (yview[1] >= 0.98)
-                        except Exception:
-                            was_at_bottom = True
-                        
                         self.trainer_text.delete("1.0", "end")
                         self.trainer_text.insert("end", "\n".join(self.trainer_log_history[sel]))
                         if not self.trainer_log_history[sel][-1].endswith("\n"):
                             self.trainer_text.insert("end", "\n")
                         
-                        if was_at_bottom:
+                        # Only auto-scroll if user hasn't scrolled away from bottom
+                        if not self._trainer_log_user_scrolled_away:
                             self.trainer_text.see("end")
         except Exception:
             pass
@@ -5710,29 +5833,28 @@ class ApolloHub(tk.Tk):
 
     def _check_auto_switch(self) -> None:
         """
-        Check if auto-switch should activate based on priority coin proximity to triggers.
-        Also manages the priority alert banner visibility and content.
+        Check if auto-switch should activate based on coin proximity to trading actions.
+        Monitors four conditions:
+        1. New buy entry signal (if slots available)
+        2. DCA trigger (existing position approaching next DCA level)
+        3. Stop loss trigger (existing position approaching stop loss)
+        4. Take profit trigger (existing position approaching trailing stop)
         
-        Process:
-        1. Read gui_settings.json to check if auto-switch is enabled
-        2. Check if manual override is active (2-minute cooldown after user selection)
-        3. Read hub_data/priority_coin.txt for closest coin to trigger
-        4. Check if distance is within threshold (default 2%)
-        5. Update alert banner with priority info
-        6. Switch chart view if all conditions met
+        Priority when multiple coins qualify:
+        1. Closest by % distance to trigger
+        2. Action type: stop loss > DCA > new entry > take profit
+        3. Largest position value
         
         Guards:
-        - Only runs if auto-switch enabled in GUI settings (Display Settings)
-        - Respects manual override timer (2 minutes)
+        - Only runs if auto-switch enabled in GUI settings
+        - Respects manual override timer (2 minutes after user selection)
         - Only switches if current chart is different from priority
-        - Silently fails if priority file missing or malformed
         """
         try:
             # Load auto-switch settings from GUI settings
             auto_switch_cfg = self.settings.get("auto_switch", {})
             
             if not auto_switch_cfg.get("enabled", False):
-                # Feature disabled - hide alert
                 self._hide_priority_alert()
                 return
             
@@ -5744,56 +5866,190 @@ class ApolloHub(tk.Tk):
             time_since_manual = now - self._last_manual_chart_switch
             
             if time_since_manual < self._manual_override_duration:
-                # User manually selected a chart recently - respect their choice
                 self._hide_priority_alert()
                 return
             
-            # Read priority coin file
-            priority_path = os.path.join(self.hub_dir, "priority_coin.txt")
-            if not os.path.isfile(priority_path):
+            # Load trader status for position data
+            trader_data = _safe_read_json(self.trader_status_path)
+            if not trader_data:
                 self._hide_priority_alert()
-                return  # No priority data yet
+                return
             
-            try:
-                with open(priority_path, 'r', encoding='utf-8') as f:
-                    import json
-                    priority_data = json.load(f)
-            except Exception:
+            positions = trader_data.get("positions", {})
+            if not positions:
                 self._hide_priority_alert()
-                return  # Malformed file
+                return
             
-            # Extract priority coin info
-            priority_coin = priority_data.get("coin", "").strip().upper()
-            distance_pct = priority_data.get("distance_pct", 999.0)
-            reason = priority_data.get("reason", "")
+            # Load trading config for thresholds and limits
+            trading_cfg = self._get_cached_trading_config()
+            long_signal_min = trading_cfg.get("entry_signals", {}).get("long_signal_min", 4)
+            stop_loss_pct = trading_cfg.get("profit_margin", {}).get("stop_loss_pct", -40.0)
+            max_concurrent = trading_cfg.get("position_sizing", {}).get("max_concurrent_positions", 3)
             
-            if not priority_coin or priority_coin not in self.coins:
+            # Count active positions (slots used)
+            active_positions = sum(1 for pos in positions.values() if float(pos.get("quantity", 0.0)) > 0)
+            slots_available = max_concurrent - active_positions
+            
+            # Evaluate each coin for proximity to trading actions
+            candidates = []
+            
+            for coin in self.coins:
+                pos = positions.get(coin)
+                if not pos:
+                    continue
+                
+                current_price = float(pos.get("current_sell_price", 0.0) or 0.0)
+                if current_price <= 0:
+                    continue
+                
+                quantity = float(pos.get("quantity", 0.0))
+                has_position = quantity > 0
+                
+                # Condition 1: New buy entry (if signal strong and slots available)
+                if not has_position and slots_available > 0:
+                    entry_distance = self._calculate_entry_distance(coin, current_price, long_signal_min)
+                    if entry_distance is not None and entry_distance <= threshold:
+                        candidates.append({
+                            "coin": coin,
+                            "distance": entry_distance,
+                            "reason": "New Entry",
+                            "priority": 3,  # new entry priority
+                            "position_value": 0.0
+                        })
+                
+                # Conditions 2-4 only apply to existing positions
+                if has_position:
+                    avg_cost = float(pos.get("avg_cost_basis", 0.0))
+                    position_value = float(pos.get("value_usd", 0.0))
+                    
+                    if avg_cost <= 0:
+                        continue
+                    
+                    # Condition 2: DCA trigger
+                    dca_line = float(pos.get("dca_line_price", 0.0))
+                    if dca_line > 0:
+                        dca_distance = abs(current_price - dca_line) / current_price * 100.0
+                        if dca_distance <= threshold:
+                            candidates.append({
+                                "coin": coin,
+                                "distance": dca_distance,
+                                "reason": "DCA Trigger",
+                                "priority": 2,  # DCA priority
+                                "position_value": position_value
+                            })
+                    
+                    # Condition 3: Stop loss
+                    stop_loss_price = avg_cost * (1.0 + stop_loss_pct / 100.0)
+                    stop_distance = abs(current_price - stop_loss_price) / current_price * 100.0
+                    if stop_distance <= threshold and current_price <= stop_loss_price * 1.05:  # approaching from above
+                        candidates.append({
+                            "coin": coin,
+                            "distance": stop_distance,
+                            "reason": "Stop Loss",
+                            "priority": 1,  # highest priority
+                            "position_value": position_value
+                        })
+                    
+                    # Condition 4: Take profit (trailing stop)
+                    trail_active = pos.get("trail_active", False)
+                    trail_line = float(pos.get("trail_line", 0.0))
+                    if trail_active and trail_line > 0:
+                        trail_distance = abs(current_price - trail_line) / current_price * 100.0
+                        if trail_distance <= threshold:
+                            candidates.append({
+                                "coin": coin,
+                                "distance": trail_distance,
+                                "reason": "Take Profit",
+                                "priority": 4,  # lowest priority
+                                "position_value": position_value
+                            })
+            
+            # No candidates within threshold
+            if not candidates:
                 self._hide_priority_alert()
-                return  # Invalid coin
+                return
             
-            # Check if within threshold
-            if distance_pct > threshold:
-                self._hide_priority_alert()
-                return  # Not close enough to trigger
+            # Sort by priority: closest distance, then action type, then largest position
+            candidates.sort(key=lambda x: (x["distance"], x["priority"], -x["position_value"]))
             
-            # Show alert banner with priority info
-            self._show_priority_alert(priority_coin, distance_pct, reason)
+            # Select top priority coin
+            priority_coin = candidates[0]["coin"]
+            priority_distance = candidates[0]["distance"]
+            priority_reason = candidates[0]["reason"]
+            
+            # Show alert banner
+            self._show_priority_alert(priority_coin, priority_distance, priority_reason)
             
             # Check if already on this chart
             current_chart = getattr(self, "_current_chart_page", "ACCOUNT")
             if current_chart == priority_coin:
-                return  # Already viewing priority coin
+                return
             
             # Switch to priority coin
             if hasattr(self, "_show_chart_page"):
                 self._show_chart_page(priority_coin, is_auto_switch=True)
                 
-                # Optional: Log the auto-switch in debug mode
                 if self.settings.get("debug_mode", False):
-                    print(f"[HUB AUTO-SWITCH] Switched to {priority_coin} ({distance_pct:.1f}% from {reason})")
+                    print(f"[HUB AUTO-SWITCH] Switched to {priority_coin} ({priority_distance:.2f}% from {priority_reason})")
         except Exception:
             self._hide_priority_alert()
             pass  # Silently fail - don't crash tick loop
+    
+    def _calculate_entry_distance(self, coin: str, current_price: float, long_signal_min: int) -> Optional[float]:
+        """
+        Calculate percentage distance from current price to buy entry trigger.
+        Returns None if no valid entry signal exists.
+        
+        Entry occurs when:
+        1. Signal strength >= long_signal_min (default 4)
+        2. Price is at or below predicted low level
+        
+        Args:
+            coin: Coin symbol (e.g., "BTC")
+            current_price: Current market price
+            long_signal_min: Minimum signal strength to trigger entry
+        
+        Returns:
+            Percentage distance to entry trigger, or None if not applicable
+        """
+        try:
+            # Read signal strength
+            folder = self.coin_folders.get(coin, "")
+            if not folder:
+                return None
+            
+            signal_path = os.path.join(folder, "long_dca_signal.txt")
+            try:
+                with open(signal_path, "r", encoding="utf-8") as f:
+                    signal = int(float((f.read() or "0").strip()))
+            except Exception:
+                signal = 0
+            
+            # Check if signal is strong enough
+            if signal < long_signal_min:
+                return None
+            
+            # Read predicted low prices (buy entry levels)
+            low_path = os.path.join(folder, "low_bound_prices.txt")
+            low_levels = read_price_levels_from_html(low_path)
+            
+            if not low_levels:
+                return None
+            
+            # Use the lowest price level (most immediate/closest timeframe)
+            # These are the levels where buys would trigger
+            entry_price = min(price for _, price in low_levels)
+            
+            if entry_price <= 0:
+                return None
+            
+            # Calculate distance from current price to entry level
+            # Positive distance means price needs to drop to reach entry
+            distance_pct = abs(current_price - entry_price) / current_price * 100.0
+            
+            return distance_pct
+        except Exception:
+            return None
     
     def _show_priority_alert(self, coin: str, distance_pct: float, reason: str) -> None:
         """
@@ -5931,6 +6187,8 @@ class ApolloHub(tk.Tk):
             min_alloc = trading_cfg.get("position_sizing", {}).get("min_allocation_usd", 0.5)
             multiplier = trading_cfg.get("dca", {}).get("position_multiplier", 2.0)
             max_concurrent = trading_cfg.get("position_sizing", {}).get("max_concurrent_positions", 3)
+            dca_levels_configured = trading_cfg.get("dca", {}).get("levels", [-2.5, -5.0, -10.0, -20.0])
+            total_dca_levels = len(dca_levels_configured)
             
             # Use max_concurrent_positions instead of total coins for spread calculation
             # since not all coins can be active simultaneously
@@ -5946,7 +6204,7 @@ class ApolloHub(tk.Tk):
                     alloc_spread = min_alloc
 
                 required = alloc_spread * n  # initial buys for all coins
-                while required > 0.0 and (required * (1.0 + multiplier)) <= (total_val + 1e-9):
+                while spread_levels < total_dca_levels and required > 0.0 and (required * (1.0 + multiplier)) <= (total_val + 1e-9):
                     required *= (1.0 + multiplier)
                     spread_levels += 1
 
@@ -5956,13 +6214,17 @@ class ApolloHub(tk.Tk):
                     alloc_single = min_alloc
 
                 required = alloc_single  # initial buy for one coin
-                while required > 0.0 and (required * (1.0 + multiplier)) <= (total_val + 1e-9):
+                while single_levels < total_dca_levels and required > 0.0 and (required * (1.0 + multiplier)) <= (total_val + 1e-9):
                     required *= (1.0 + multiplier)
                     single_levels += 1
 
-            # Show labels + number (one line each)
-            self.lbl_acct_dca_spread.config(text=f"DCA Levels (spread): {spread_levels}")
-            self.lbl_acct_dca_single.config(text=f"DCA Levels (single): {single_levels}")
+            # Calculate percentage of total DCA levels that can be afforded
+            spread_pct = int((spread_levels / total_dca_levels * 100)) if total_dca_levels > 0 else 0
+            single_pct = int((single_levels / total_dca_levels * 100)) if total_dca_levels > 0 else 0
+
+            # Show labels with count and percentage
+            self.lbl_acct_dca_spread.config(text=f"DCA Levels (spread): {spread_levels} ({spread_pct}%)")
+            self.lbl_acct_dca_single.config(text=f"DCA Levels (single): {single_levels} ({single_pct}%)")
 
         except Exception:
             pass

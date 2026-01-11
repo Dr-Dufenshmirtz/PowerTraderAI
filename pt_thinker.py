@@ -1530,11 +1530,11 @@ def step_coin(sym: str):
 
 				# Check if we've processed all memory patterns
 				if mem_ind >= len(memory_list):
-					# Calculate match quality: 100% = perfect match (0% diff), logarithmic decay (never 0%)
-					# Quality formula: 100 / (1 + (closest_diff / perfect_threshold))
-					# This gives 100% at 0 diff, 50% at threshold, 25% at 3x threshold, 10% at 9x threshold
+					# Calculate match quality: 100% at threshold, >100% for better matches, logarithmic decay to 0%
+					# Quality formula: 200 / (1 + (closest_diff / perfect_threshold))
+					# This gives 200% at 0 diff (perfect), 100% at threshold, 50% at 3x threshold, 20% at 9x threshold
 					if closest_diff < float('inf'):
-						match_quality = 100 / (1 + (closest_diff / perfect_threshold))
+						match_quality = 200 / (1 + (closest_diff / perfect_threshold))
 					else:
 						match_quality = 0.0  # Only 0 if no patterns exist at all
 					match_qualities[tf_choice_index] = match_quality
@@ -1929,7 +1929,7 @@ def step_coin(sym: str):
 					pm_value = sum(active_margins) / len(active_margins)
 					pm_display = f"{pm_value:+.2f}%"
 				else:
-					pm_display = "--"
+					pm_display = "----"
 
 				# Build output lines
 				lines = []
@@ -1971,9 +1971,9 @@ def step_coin(sym: str):
 						
 					# Add match quality indicator (ASCII only for Hub display compatibility)
 					quality = match_qualities[i] if i < len(match_qualities) else 100.0
-					if quality >= 67:
+					if quality >= 100:
 						quality_icon = f"Signal: {quality:.0f}% STRONG"  # Excellent match
-					elif quality >= 33:
+					elif quality >= 50:
 						quality_icon = f"Signal: {quality:.0f}% MARGINAL"  # Good match
 					else:
 						quality_icon = f"Signal: {quality:.0f}% WEAK"  # Weak match
@@ -2238,14 +2238,16 @@ try:
 						if summary['next_long_pct'] is not None:
 							long_str = f"{summary['next_long_pct']:+.1f}%"
 						else:
-							long_str = "--"
+							long_str = "----"
 						
 						if summary['next_short_pct'] is not None:
 							short_str = f"{summary['next_short_pct']:+.1f}%"
 						else:
-							short_str = "--"
+							short_str = "----"
 						
-						print(f"[{_sym:3s}]  {summary['price_str']:>8s}  {summary['signal']:6s}  Next Buy: {long_str}  Next Exit: {short_str}  PM: {summary['pm_display']}", flush=True)
+						# Dynamic spacing: 2 spaces for 3-letter tickers, 1 for 4-letter, 0 for 5-letter
+						spacing = " " * max(0, 4 - len(_sym))
+						print(f"[{_sym}]{spacing}{summary['price_str']:>8s}  {summary['signal']:6s}  Next Buy: {long_str}  Next Exit: {short_str}  PM: {summary['pm_display']}", flush=True)
 		
 		# Priority detection for auto-switch feature
 		# Find the coin closest to a trigger (buy or exit), with tiebreakers
