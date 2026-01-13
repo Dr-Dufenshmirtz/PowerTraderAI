@@ -2898,10 +2898,10 @@ class ApolloHub(tk.Tk):
         self.btn_toggle_all.pack(side="left")
 
         # Thinker and Trader status - displayed after Autopilot button
-        self.lbl_neural = ttk.Label(controls_left, text="Thinker: stopped")
+        self.lbl_neural = ttk.Label(controls_left, text="Thinker: waiting")
         self.lbl_neural.pack(anchor="w", padx=6, pady=(6, 2))
 
-        self.lbl_trader = ttk.Label(controls_left, text="Trader: stopped")
+        self.lbl_trader = ttk.Label(controls_left, text="Trader: waiting")
         self.lbl_trader.pack(anchor="w", padx=6, pady=(0, 6))
 
         # Account info (LEFT column, under status) - reduced top padding
@@ -4091,6 +4091,9 @@ class ApolloHub(tk.Tk):
         if getattr(self, "_auto_mode_active", False):
             return
         
+        # Clear manually stopped flag (user is now engaging autopilot)
+        self._user_manually_stopped = False
+        
         # Check training status
         status_map = self._training_status_map()
         needs_training = [c for c, s in status_map.items() if s in ("NOT TRAINED", "ERROR", "STOPPED")]
@@ -4751,6 +4754,9 @@ class ApolloHub(tk.Tk):
         self._auto_mode_active = False
         self._auto_mode_phase = ""
         
+        # Set flag to indicate user manually stopped (shows STOPPED instead of WAITING)
+        self._user_manually_stopped = True
+        
         # Note: Don't clear _auto_retraining_active here - it's managed by the auto-retrain flow
         # and needs to persist through stop/restart cycle
 
@@ -4867,6 +4873,9 @@ class ApolloHub(tk.Tk):
             
             # If at least one coin is trained and current, start thinker automatically
             if current_trained:
+                # Clear manually stopped flag (auto-starting)
+                self._user_manually_stopped = False
+                
                 # Reset thinker-ready gate file
                 try:
                     with open(self.runner_ready_path, "w", encoding="utf-8") as f:
@@ -5746,23 +5755,28 @@ class ApolloHub(tk.Tk):
         # Determine status for thinker and trader (STOPPED, WAITING, or RUNNING)
         auto_mode_active = getattr(self, "_auto_mode_active", False)
         auto_mode_phase = getattr(self, "_auto_mode_phase", "")
+        user_manually_stopped = getattr(self, "_user_manually_stopped", False)
         
         # Show WAITING when autopilot is engaged but processes aren't running yet
         # Show RUNNING when processes are active
-        # Show STOPPED otherwise
+        # Show STOPPED only when user manually stopped (not just idle)
         if neural_running:
             neural_status = "RUNNING"
         elif auto_mode_active or (auto_mode_phase in ("TRAINING", "RUNNING") and self._auto_start_trader_pending):
             neural_status = "WAITING"
-        else:
+        elif user_manually_stopped:
             neural_status = "STOPPED"
+        else:
+            neural_status = "WAITING"
         
         if trader_running:
             trader_status = "RUNNING"
         elif auto_mode_active or (auto_mode_phase in ("TRAINING", "RUNNING") and self._auto_start_trader_pending):
             trader_status = "WAITING"
-        else:
+        elif user_manually_stopped:
             trader_status = "STOPPED"
+        else:
+            trader_status = "WAITING"
         
         self.lbl_neural.config(text=f"Thinker: {neural_status}")
         self.lbl_trader.config(text=f"Trader: {trader_status}")
