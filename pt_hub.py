@@ -85,7 +85,7 @@ matplotlib.rcParams['font.family'] = 'sans-serif'
 matplotlib.rcParams['font.sans-serif'] = ['Segoe UI', 'Arial', 'DejaVu Sans']
 
 # Version: YY.MMDDHH (Year, Month, Day, Hour of last save)
-VERSION = "26.011308"
+VERSION = "26.011309"
 
 # Windows DPAPI encryption helpers
 def _encrypt_with_dpapi(data: str) -> bytes:
@@ -2184,6 +2184,10 @@ class ApolloHub(tk.Tk):
         self._trainer_log_user_scrolled_away = False
         self._runner_log_user_scrolled_away = False
         self._trader_log_user_scrolled_away = False
+        
+        # Track how many lines are currently displayed in trainer text widget per coin
+        # This prevents full rebuild on every update (which causes scroll jumps)
+        self._trainer_log_displayed_lines: Dict[str, int] = {}
 
         # account value chart widget (created in _build_layout)
         self.account_chart = None
@@ -2852,8 +2856,10 @@ class ApolloHub(tk.Tk):
         train_buttons_row = ttk.Frame(training_left)
         train_buttons_row.pack(fill="x", padx=6, pady=(6, 6))
 
-        ttk.Button(train_buttons_row, text="Train Selected", width=BTN_W, command=self.train_selected_coin).pack(anchor="w", pady=(0, 6))
-        ttk.Button(train_buttons_row, text="Train All", width=BTN_W, command=self.train_all_coins).pack(anchor="w")
+        self.btn_train_selected = ttk.Button(train_buttons_row, text="Train Selected", width=BTN_W, command=self.toggle_train_selected_coin)
+        self.btn_train_selected.pack(anchor="w", pady=(0, 6))
+        self.btn_train_all = ttk.Button(train_buttons_row, text="Train All", width=BTN_W, command=self.toggle_train_all_coins)
+        self.btn_train_all.pack(anchor="w")
 
         # Training status (per-coin + gating reason)
         self.lbl_training_overview = ttk.Label(training_left, text="Training: N/A")
@@ -3156,9 +3162,14 @@ class ApolloHub(tk.Tk):
                         self.trainer_text.insert("end", "\n".join(history))
                         if not history[-1].endswith("\n"):
                             self.trainer_text.insert("end", "\n")
+                        # Track that we've displayed all history lines
+                        self._trainer_log_displayed_lines[selected_coin] = len(history)
                         self.trainer_text.see("end")
                         # Reset scroll flag when switching coins (start at bottom)
                         self._trainer_log_user_scrolled_away = False
+                else:
+                    # No history for this coin yet
+                    self._trainer_log_displayed_lines[selected_coin] = 0
                 
                 # Sync with train_coin_combo if present
                 if hasattr(self, "train_coin_var"):
@@ -4533,6 +4544,52 @@ class ApolloHub(tk.Tk):
         for c in self.coins:
             self.trainer_coin_var.set(c)
             self.start_trainer_for_selected_coin()
+    
+    def toggle_train_selected_coin(self) -> None:
+        """Toggle between training and canceling for selected coin."""
+        coin = (getattr(self, 'train_coin_var', self.trainer_coin_var).get() or "").strip().upper()
+        if not coin:
+            return
+        
+        # Check if this coin is currently training
+        lp = self.trainers.get(coin)
+        if lp and lp.info.proc and lp.info.proc.poll() is None:
+            # Trainer is running, stop it
+            self.stop_trainer_for_coin(coin)
+        else:
+            # Trainer not running, start it
+            self.train_selected_coin()
+    
+    def toggle_train_all_coins(self) -> None:
+        """Toggle between training all and canceling all."""
+        # Check if any trainers are running
+        running = [c for c, lp in self.trainers.items() if lp.info.proc and lp.info.proc.poll() is None]
+        
+        if running:
+            # At least one trainer running, stop all
+            self.stop_all_trainers()
+        else:
+            # No trainers running, start all
+            self.train_all_coins()
+    
+    def stop_trainer_for_coin(self, coin: str) -> None:
+        """Stop trainer for a specific coin."""
+        lp = self.trainers.get(coin)
+        if not lp or not lp.info.proc or lp.info.proc.poll() is not None:
+            return
+        try:
+            lp.info.proc.terminate()
+        except Exception:
+            pass
+    
+    def stop_all_trainers(self) -> None:
+        """Stop all running trainers."""
+        for coin, lp in self.trainers.items():
+            if lp.info.proc and lp.info.proc.poll() is None:
+                try:
+                    lp.info.proc.terminate()
+                except Exception:
+                    pass
 
     def start_trainer_for_selected_coin(self) -> None:
         coin = (self.trainer_coin_var.get() or "").strip().upper()
@@ -4663,13 +4720,7 @@ class ApolloHub(tk.Tk):
 
     def stop_trainer_for_selected_coin(self) -> None:
         coin = (self.trainer_coin_var.get() or "").strip().upper()
-        lp = self.trainers.get(coin)
-        if not lp or not lp.info.proc or lp.info.proc.poll() is not None:
-            return
-        try:
-            lp.info.proc.terminate()
-        except Exception:
-            pass
+        self.stop_trainer_for_coin(coin)
 
     def stop_all_scripts(self) -> None:
         # Cancel any pending "wait for runner then start trader"
@@ -4684,6 +4735,7 @@ class ApolloHub(tk.Tk):
 
         self.stop_neural()
         self.stop_trader()
+        self.stop_all_trainers()
 
         # Also reset the thinker-ready gate file (best-effort)
         try:
@@ -5720,6 +5772,29 @@ class ApolloHub(tk.Tk):
         except Exception:
             pass
 
+        # Update training button states based on running trainers
+        try:
+            # Check which trainers are actually running (independent of status map)
+            running_trainers = [c for c, lp in self.trainers.items() if lp.info.proc and lp.info.proc.poll() is None]
+            selected_coin = (getattr(self, 'train_coin_var', self.trainer_coin_var).get() or "").strip().upper()
+            selected_is_training = selected_coin in running_trainers
+            
+            # Update Train Selected button
+            if hasattr(self, "btn_train_selected") and self.btn_train_selected:
+                if selected_is_training:
+                    self.btn_train_selected.config(text="Cancel Selected")
+                else:
+                    self.btn_train_selected.config(text="Train Selected")
+            
+            # Update Train All button
+            if hasattr(self, "btn_train_all") and self.btn_train_all:
+                if running_trainers:
+                    self.btn_train_all.config(text="Cancel All")
+                else:
+                    self.btn_train_all.config(text="Train All")
+        except Exception:
+            pass
+
         # Training overview + per-coin list
         try:
             training_running = [c for c, s in status_map.items() if s == "TRAINING"]
@@ -5931,34 +6006,54 @@ class ApolloHub(tk.Tk):
                 # Initialize history for this coin if not present
                 if sel not in self.trainer_log_history:
                     self.trainer_log_history[sel] = []
+                if sel not in self._trainer_log_displayed_lines:
+                    self._trainer_log_displayed_lines[sel] = 0
                 
                 # Drain new messages and add to history
+                new_lines_added = False
                 try:
                     while True:
                         line = lp.log_q.get_nowait()
                         self.trainer_log_history[sel].append(line)
+                        new_lines_added = True
                         # Keep history manageable (last 2500 lines)
                         if len(self.trainer_log_history[sel]) > 2500:
+                            # When trimming, we need to rebuild the display
+                            excess = len(self.trainer_log_history[sel]) - 2500
                             self.trainer_log_history[sel] = self.trainer_log_history[sel][-2500:]
+                            self._trainer_log_displayed_lines[sel] = max(0, self._trainer_log_displayed_lines[sel] - excess)
                 except queue.Empty:
                     pass
                 
-                # Display to text widget (only if this coin is currently selected)
-                if self.trainer_log_history[sel]:
-                    # Check if we need to update the display
-                    current_line_count = int(self.trainer_text.index("end-1c").split(".")[0])
+                # Display new lines incrementally (avoids full rebuild and scroll jumps)
+                if new_lines_added and self.trainer_log_history[sel]:
                     history_line_count = len(self.trainer_log_history[sel])
+                    displayed_count = self._trainer_log_displayed_lines.get(sel, 0)
                     
-                    # If mismatch, refresh the entire display
-                    if current_line_count != history_line_count:
-                        self.trainer_text.delete("1.0", "end")
-                        self.trainer_text.insert("end", "\n".join(self.trainer_log_history[sel]))
-                        if not self.trainer_log_history[sel][-1].endswith("\n"):
-                            self.trainer_text.insert("end", "\n")
+                    # Only append new lines that haven't been displayed yet
+                    if displayed_count < history_line_count:
+                        new_lines = self.trainer_log_history[sel][displayed_count:]
+                        for line in new_lines:
+                            self.trainer_text.insert("end", line + "\n")
+                        
+                        # Update displayed count
+                        self._trainer_log_displayed_lines[sel] = history_line_count
+                        
+                        # Trim old lines from text widget if needed (keep last 2500)
+                        try:
+                            current = int(self.trainer_text.index("end-1c").split(".")[0])
+                            if current > 2500:
+                                self.trainer_text.delete("1.0", f"{current - 2500}.0")
+                        except Exception:
+                            pass
                         
                         # Only auto-scroll if user hasn't scrolled away from bottom
                         if not self._trainer_log_user_scrolled_away:
-                            self.trainer_text.see("end")
+                            try:
+                                self.trainer_text.update_idletasks()
+                                self.trainer_text.yview_moveto(1.0)
+                            except Exception:
+                                self.trainer_text.see("end")
         except Exception:
             pass
 
