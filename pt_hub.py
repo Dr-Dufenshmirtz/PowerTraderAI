@@ -85,7 +85,7 @@ matplotlib.rcParams['font.family'] = 'sans-serif'
 matplotlib.rcParams['font.sans-serif'] = ['Segoe UI', 'Arial', 'DejaVu Sans']
 
 # Version: YY.MMDDHH (Year, Month, Day, Hour of last save)
-VERSION = "26.011300"
+VERSION = "26.011308"
 
 # Windows DPAPI encryption helpers
 def _encrypt_with_dpapi(data: str) -> bytes:
@@ -2158,6 +2158,11 @@ class ApolloHub(tk.Tk):
         self._auto_retraining_active = False       # Currently in auto-retrain workflow
         self._auto_retrain_pending_coins: set = set()  # Coins being retrained
         self._last_auto_retrain_check = 0.0       # Timestamp of last staleness check
+
+        # Auto-Start Thinker State
+        # Tracks training status changes to auto-start thinker after manual training completes
+        self._prev_training_status_map: Dict[str, str] = {}  # Previous tick's training status map
+        self._auto_started_thinker_after_training = False    # Whether thinker was auto-started this session
 
         # Live Trading State Cache
         # Stores most recent position data for each coin to overlay on charts
@@ -5732,8 +5737,27 @@ class ApolloHub(tk.Tk):
             newly_trained = [c for c in status_map.keys() 
                            if prev_status.get(c) == "TRAINING" and status_map.get(c) == "TRAINED"]
             
-            # If any coins just finished training successfully, and we're not in autopilot/auto-retrain mode, start thinker
-            if newly_trained and not auto_mode_active and not auto_retraining and not neural_running:
+            # Track if we've already auto-started after this training session
+            auto_started_this_session = getattr(self, "_auto_started_thinker_after_training", False)
+            
+            # Detect if training just finished: had running trainers last tick, now none
+            prev_had_trainers = any(v == "TRAINING" for v in prev_status.values())
+            now_has_trainers = len(training_running) > 0
+            training_just_finished = prev_had_trainers and not now_has_trainers
+            
+            # Reset the flag when training starts (any coin goes into TRAINING state)
+            if training_running:
+                self._auto_started_thinker_after_training = False
+            
+            # Auto-start thinker if:
+            # 1. At least one coin just transitioned TRAINING -> TRAINED, OR training just finished with trained coins
+            # 2. Not in autopilot or auto-retrain mode
+            # 3. Thinker not already running
+            # 4. Haven't already auto-started for this training session
+            has_trained_coins = any(v == "TRAINED" for v in status_map.values())
+            should_auto_start = (newly_trained or (training_just_finished and has_trained_coins))
+            
+            if should_auto_start and not auto_mode_active and not auto_retraining and not neural_running and not auto_started_this_session:
                 try:
                     # Reset thinker-ready gate file
                     with open(self.runner_ready_path, "w", encoding="utf-8") as f:
@@ -5743,6 +5767,9 @@ class ApolloHub(tk.Tk):
                 
                 # Start the thinker automatically (no dialog needed - silent convenience feature)
                 self._start_process(self.proc_neural, log_q=self.runner_log_q, prefix="[THINKER] ")
+                
+                # Mark that we've auto-started for this training session
+                self._auto_started_thinker_after_training = True
             
             # Save current status for next tick's comparison
             self._prev_training_status_map = status_map.copy()

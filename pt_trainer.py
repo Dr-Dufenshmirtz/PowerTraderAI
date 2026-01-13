@@ -150,6 +150,11 @@ _volatility_cache = {}  # tf_choice -> {"ewma_volatility": float, "avg_volatilit
 # Tracks validation count per pattern to enable removal of stale low-weight patterns
 _pattern_ages = {}  # tf_choice -> [age_count_per_pattern]
 
+# Threshold history buffer for EWMA calculation
+# Accumulates thresholds over staleness window, applies exponential weighting for recency bias
+# This provides stable threshold values for thinker that aren't skewed by single volatility spikes
+_threshold_buffers = {}  # tf_choice -> {"buffer": deque, "max_size": int}
+
 # Global write buffer to reduce disk I/O during training
 # Thresholds are buffered and written only at critical points (timeframe end, training complete, user stop)
 _write_buffer = {
@@ -251,12 +256,42 @@ def flush_all_buffers(force=True):
 	This ensures data integrity while minimizing disk writes during training."""
 	debug_print("[DEBUG] TRAINER: Flushing all buffers to disk...")
 	
-	# 1. Write all buffered thresholds
-	for tf_choice, threshold_value in _write_buffer["thresholds"].items():
+	# 1. Calculate EWMA from threshold buffers and write to disk
+	# Apply exponential weighting to give recent thresholds more influence
+	# This provides stable values that represent current market conditions without single-spike bias
+	for tf_choice in _threshold_buffers.keys():
 		try:
+			buffer_data = _threshold_buffers[tf_choice]["buffer"]
+			if len(buffer_data) == 0:
+				# No thresholds accumulated (shouldn't happen, but handle gracefully)
+				if tf_choice in _write_buffer["thresholds"]:
+					# Use last buffered value as fallback
+					final_threshold = _write_buffer["thresholds"][tf_choice]
+				else:
+					# Use initial threshold as last resort
+					final_threshold = initial_perfect_threshold
+				debug_print(f"[DEBUG] TRAINER: No thresholds in buffer for {tf_choice}, using fallback: {final_threshold:.4f}")
+			elif len(buffer_data) == 1:
+				# Only one threshold - use it directly
+				final_threshold = buffer_data[0]
+				debug_print(f"[DEBUG] TRAINER: Single threshold for {tf_choice}: {final_threshold:.4f}")
+			else:
+				# Calculate EWMA with exponential decay (same as volatility)
+				# Recent values get exponentially higher weight than older values
+				decay = volatility_ewma_decay  # Use same decay as volatility (0.9 default)
+				weighted_threshold = buffer_data[0]  # Start with oldest
+				for threshold in list(buffer_data)[1:]:  # Iterate through buffer
+					weighted_threshold = (1 - decay) * threshold + decay * weighted_threshold
+				final_threshold = weighted_threshold
+				
+				# Calculate simple mean for comparison
+				simple_mean = sum(buffer_data) / len(buffer_data)
+				debug_print(f"[DEBUG] TRAINER: Threshold EWMA for {tf_choice}: {final_threshold:.4f} (simple mean: {simple_mean:.4f}, n={len(buffer_data)})")
+			
+			# Write final threshold to disk
 			with open(f"neural_perfect_threshold_{tf_choice}.dat", "w+", encoding="utf-8") as f:
-				f.write(str(threshold_value))
-			debug_print(f"[DEBUG] TRAINER: Wrote threshold for {tf_choice}: {threshold_value:.4f}")
+				f.write(str(final_threshold))
+			debug_print(f"[DEBUG] TRAINER: Wrote final threshold for {tf_choice}: {final_threshold:.4f}")
 		except Exception as e:
 			debug_print(f"[DEBUG] TRAINER: Failed to write threshold for {tf_choice}: {e}")
 	
@@ -626,6 +661,7 @@ else:
 tf_minutes = [tf_minutes_map.get(tf, 60) for tf in tf_choices]
 
 # Load training parameter settings with defaults
+staleness_days = training_settings.get("staleness_days", 14) if os.path.isfile(import_path) else 14
 pruning_sigma_level = training_settings.get("pruning_sigma_level", 3.0) if os.path.isfile(import_path) else 3.0
 min_threshold = training_settings.get("min_threshold", 5.0) if os.path.isfile(import_path) else 5.0
 max_threshold = training_settings.get("max_threshold", 25.0) if os.path.isfile(import_path) else 25.0
@@ -664,6 +700,19 @@ initial_perfect_threshold = (min_threshold + max_threshold) / 2
 # Initialize number_of_candles based on pattern_size setting
 # pattern_size=4 means 4 candles (3 prior values + current), pattern_size=3 means 3 candles (2 prior + current)
 number_of_candles = [pattern_size] * len(tf_choices)
+
+# Initialize threshold buffers for EWMA calculation
+# Buffer size = staleness window in hours / timeframe hours (always round up, minimum 1)
+# This captures recent market conditions with exponential weighting toward most recent
+from collections import deque
+for idx, tf_choice in enumerate(tf_choices):
+	tf_hours = tf_minutes[idx] / 60.0
+	buffer_size = max(1, math.ceil((staleness_days * 24.0) / tf_hours))
+	_threshold_buffers[tf_choice] = {
+		"buffer": deque(maxlen=buffer_size),
+		"max_size": buffer_size
+	}
+	debug_print(f"[DEBUG] TRAINER: Threshold buffer for {tf_choice}: {buffer_size} values (staleness={staleness_days}d, tf={tf_hours}h)")
 
 # Debug print to confirm settings are loaded (will only show if debug mode is enabled)
 try:
@@ -1469,6 +1518,11 @@ while True:
 					# Formula: min(max_threshold, 4.0 × volatility), clamped to [min_threshold, max_threshold]
 					perfect_threshold = min(max_threshold, 4.0 * avg_volatility)
 					perfect_threshold = max(min_threshold, perfect_threshold)
+					
+					# Accumulate threshold in buffer for EWMA calculation at end of training
+					# Each candle's threshold is added to rolling window over staleness period
+					if tf_choice in _threshold_buffers:
+						_threshold_buffers[tf_choice]["buffer"].append(perfect_threshold)
 					
 					# Pattern library size
 					pattern_count = len(_mem["memory_list"])
