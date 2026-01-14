@@ -504,16 +504,22 @@ def PrintException():
 	filename = f.f_code.co_filename
 	linecache.checkcache(filename)
 	line = linecache.getline(filename, lineno, f.f_globals)
-	msg = 'EXCEPTION IN (LINE {} "{}"): {}'.format(lineno, line.strip(), exc_obj)
-	print(msg)
-	# Always log exceptions to file (even without debug mode)
+	# Truncate exception message for console if too long (e.g., HTML error pages)
+	exc_msg_full = str(exc_obj)
+	exc_msg_console = exc_msg_full
+	if len(exc_msg_full) > 500:
+		exc_msg_console = exc_msg_full[:500] + f"... ({len(exc_msg_full) - 500} more chars)"
+	msg_console = 'EXCEPTION IN (LINE {} "{}"): {}'.format(lineno, line.strip(), exc_msg_console)
+	msg_full = 'EXCEPTION IN (LINE {} "{}"): {}'.format(lineno, line.strip(), exc_msg_full)
+	print(msg_console)
+	# Always log exceptions to file (even without debug mode) with full error message
 	try:
 		coin_name = sys.argv[1] if len(sys.argv) > 1 else "unknown"
 		log_file = f"debug_trainer_{coin_name}.log"
 		import datetime
 		timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 		with open(log_file, "a", encoding="utf-8") as f:
-			f.write(f"[{timestamp}] {msg}\n")
+			f.write(f"[{timestamp}] {msg_full}\n")
 	except Exception:
 		pass
 how_far_to_look_back = 100000
@@ -946,7 +952,9 @@ while True:
 			kucoin_retry_count = 0  # Reset on success
 		except Exception as e:
 			kucoin_retry_count += 1
-			debug_print(f"[DEBUG] TRAINER: KuCoin error (attempt {kucoin_retry_count}/{kucoin_max_retries}): {e}")
+			# Truncate error message to prevent HTML dumps in console
+			error_msg = str(e)[:200] + "..." if len(str(e)) > 200 else str(e)
+			debug_print(f"[DEBUG] TRAINER: KuCoin error (attempt {kucoin_retry_count}/{kucoin_max_retries}): {error_msg}")
 			if kucoin_retry_count >= kucoin_max_retries:
 				handle_network_error(f"KuCoin historical data fetch for {_arg_coin}", e)
 			PrintException()

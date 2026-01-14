@@ -499,6 +499,7 @@ class CryptoAPITrading:
         
         # Heartbeat tracking: periodic status messages to show trader is alive
         self._last_heartbeat = 0
+        self._last_status_message = None  # Track last status to avoid duplicate prints
 
     def _atomic_write_json(self, path: str, data: dict) -> None:
         """Write JSON data atomically to prevent corruption from interrupted writes.
@@ -1799,13 +1800,17 @@ class CryptoAPITrading:
                 "percent_in_trade": float(in_use),
             }
 
-        # Periodic heartbeat message (every 90 seconds)
+        # Periodic heartbeat message (every 90 seconds, but only when values change)
         current_time = time.time()
         if current_time - self._last_heartbeat >= 90:
             self._last_heartbeat = current_time
             num_positions = len([h for h in holdings_list if h.get("asset_code") != "USDC"])
             cb_status = "PAUSED" if _circuit_breaker["is_open"] else "ACTIVE"
-            print(f"Status: {cb_status} | Positions: {num_positions} | Buying Power: ${buying_power:,.2f} | Total Value: ${total_account_value:,.2f}", flush=True)
+            status_msg = f"Status: {cb_status} | Positions: {num_positions} | Buying Power: ${buying_power:,.2f} | Total Value: ${total_account_value:,.2f}"
+            # Only print if status changed (prevents spam of identical messages)
+            if status_msg != self._last_status_message:
+                print(status_msg, flush=True)
+                self._last_status_message = status_msg
 
         os.system('cls' if os.name == 'nt' else 'clear')
 

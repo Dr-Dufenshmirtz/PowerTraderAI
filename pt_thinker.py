@@ -255,14 +255,20 @@ def PrintException():
 
 	linecache.checkcache(filename)
 	line = linecache.getline(filename, lineno, f.f_globals)
-	msg = 'EXCEPTION IN (LINE {} "{}"): {}'.format(lineno, line.strip(), exc_obj)
-	print(msg, flush=True)
-	# Always log exceptions to file (even without debug mode)
+	# Truncate exception message for console if too long (e.g., HTML error pages)
+	exc_msg_full = str(exc_obj)
+	exc_msg_console = exc_msg_full
+	if len(exc_msg_full) > 500:
+		exc_msg_console = exc_msg_full[:500] + f"... ({len(exc_msg_full) - 500} more chars)"
+	msg_console = 'EXCEPTION IN (LINE {} "{}"): {}'.format(lineno, line.strip(), exc_msg_console)
+	msg_full = 'EXCEPTION IN (LINE {} "{}"): {}'.format(lineno, line.strip(), exc_msg_full)
+	print(msg_console, flush=True)
+	# Always log exceptions to file (even without debug mode) with full error message
 	try:
 		import datetime
 		timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 		with open("debug_thinker.log", "a", encoding="utf-8") as f:
-			f.write(f"[{timestamp}] {msg}\n")
+			f.write(f"[{timestamp}] {msg_full}\n")
 	except Exception:
 		pass
 
@@ -2014,7 +2020,7 @@ def step_coin(sym: str):
 						quality_icon = f"Signal: {quality:.0f}% PERFECT"  # Excellent match
 					elif quality >= 67:
 						quality_icon = f"Signal: {quality:.0f}% STRONG"  # Good match
-					elif quality >= 50:
+					elif quality >= 33:
 						quality_icon = f"Signal: {quality:.0f}% MARGINAL"  # Good match
 					else:
 						quality_icon = f"Signal: {quality:.0f}% WEAK"  # Weak match
