@@ -1508,9 +1508,9 @@ def step_coin(sym: str):
 						current_val = current_pattern[i]
 						memory_val = float(memory_pattern[i])
 						# Relative difference as percentage of pattern value
-						# Use minimum baseline of 0.05% to handle zero/tiny patterns consistently
-						# For patterns >0.05%: normal relative comparison; for patterns <0.05%: 0.05% is the noise floor
-						baseline = max(abs(memory_val), 0.05)
+						# Use minimum baseline of 0.1% to handle zero/tiny patterns consistently
+						# For patterns >0.1%: normal relative comparison; for patterns <0.1%: 0.1% is the noise floor
+						baseline = max(abs(memory_val), 0.1)
 						diff = (abs(current_val - memory_val) / baseline) * 100
 						total_diff += diff
 						valid_comparisons += 1

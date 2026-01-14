@@ -85,7 +85,7 @@ matplotlib.rcParams['font.family'] = 'sans-serif'
 matplotlib.rcParams['font.sans-serif'] = ['Segoe UI', 'Arial', 'DejaVu Sans']
 
 # Version: YY.MMDDHH (Year, Month, Day, Hour of last save)
-VERSION = "26.011322"
+VERSION = "26.011408"
 
 # Windows DPAPI encryption helpers
 def _encrypt_with_dpapi(data: str) -> bytes:
@@ -635,7 +635,7 @@ DEFAULT_TRAINING_CONFIG = {
     "staleness_days": 14,
     "auto_train_when_stale": True,
     "pruning_sigma_level": 3.0,
-    "min_threshold": 5.0,
+    "min_threshold": 10.0,
     "max_threshold": 25.0,
     "pattern_size": 4,
     "weight_base_step": 0.25,
@@ -8763,7 +8763,7 @@ class ApolloHub(tk.Tk):
 
         # Minimum threshold
         ttk.Label(learning_frame, text="Min threshold (%):").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
-        min_threshold_var = tk.StringVar(value=str(cfg.get("min_threshold", 5.0)))
+        min_threshold_var = tk.StringVar(value=str(cfg.get("min_threshold", 10.0)))
         ttk.Entry(learning_frame, textvariable=min_threshold_var, width=15).grid(row=3, column=1, sticky="w", pady=6)
 
         ttk.Label(

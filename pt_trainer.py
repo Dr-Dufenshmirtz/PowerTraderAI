@@ -669,7 +669,7 @@ tf_minutes = [tf_minutes_map.get(tf, 60) for tf in tf_choices]
 # Load training parameter settings with defaults
 staleness_days = training_settings.get("staleness_days", 14) if os.path.isfile(import_path) else 14
 pruning_sigma_level = training_settings.get("pruning_sigma_level", 3.0) if os.path.isfile(import_path) else 3.0
-min_threshold = training_settings.get("min_threshold", 5.0) if os.path.isfile(import_path) else 5.0
+min_threshold = training_settings.get("min_threshold", 10.0) if os.path.isfile(import_path) else 10.0
 max_threshold = training_settings.get("max_threshold", 25.0) if os.path.isfile(import_path) else 25.0
 pattern_size = training_settings.get("pattern_size", 4) if os.path.isfile(import_path) else 4
 
@@ -1423,9 +1423,9 @@ while True:
 									# Example: memory=5%, current=6%, threshold=15% → diff = |6-5|/5 * 100 = 20% > 15% (no match)
 									# Example: memory=5%, current=5.5%, threshold=15% → diff = |5.5-5|/5 * 100 = 10% < 15% (match)
 									# This scales precision: small moves get tight absolute tolerances, large moves get proportional tolerances
-									# Use minimum baseline of 0.05% to handle zero/tiny patterns consistently
-									# For patterns >0.05%: normal relative comparison; for patterns <0.05%: 0.05% is the noise floor
-									baseline = max(abs(memory_candle), 0.05)
+									# Use minimum baseline of 0.1% to handle zero/tiny patterns consistently
+									# For patterns >0.1%: normal relative comparison; for patterns <0.1%: 0.1% is the noise floor
+									baseline = max(abs(memory_candle), 0.1)
 									difference = (abs(current_candle - memory_candle) / baseline) * 100
 									checks.append(difference)
 								
@@ -1523,8 +1523,8 @@ while True:
 					# Formula: Scale with volatility, cap at max, ensure minimum
 					# Low volatility → tight threshold (specific patterns needed)
 					# High volatility → loose threshold (accommodate noise)
-					# Formula: min(max_threshold, 4.0 × volatility), clamped to [min_threshold, max_threshold]
-					perfect_threshold = min(max_threshold, 4.0 * avg_volatility)
+					# Formula: min(max_threshold, 5.0 × volatility), clamped to [min_threshold, max_threshold]
+					perfect_threshold = min(max_threshold, 5.0 * avg_volatility)
 					perfect_threshold = max(min_threshold, perfect_threshold)
 					
 					# Accumulate threshold in buffer for EWMA calculation at end of training
