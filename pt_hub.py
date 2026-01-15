@@ -692,7 +692,7 @@ DEFAULT_TRAINING_CONFIG = {
     "weight_threshold_min": 0.03,
     "weight_threshold_max": 0.2,
     "volatility_ewma_decay": 0.9,
-    "weight_decay_rate": 0.001,
+    "weight_decay_rate": 0.0001,
     "weight_decay_target": 1.0,
     "age_pruning_enabled": True,
     "age_pruning_percentile": 0.10,
@@ -8966,7 +8966,7 @@ class ApolloHub(tk.Tk):
         ttk.Label(advanced_frame, text="Temporal Decay", font=("TkDefaultFont", 9, "bold")).grid(row=15, column=0, columnspan=2, sticky="w", pady=(0, 8))
         
         ttk.Label(advanced_frame, text="Weight decay rate:").grid(row=16, column=0, sticky="w", padx=(0, 10), pady=6)
-        weight_decay_rate_var = tk.StringVar(value=str(cfg.get("weight_decay_rate", 0.001)))
+        weight_decay_rate_var = tk.StringVar(value=str(cfg.get("weight_decay_rate", 0.0001)))
         ttk.Entry(advanced_frame, textvariable=weight_decay_rate_var, width=15).grid(row=16, column=1, sticky="w", pady=6)
         ttk.Label(advanced_frame, text="Rate weights decay toward baseline per validation (0.0001-0.01 range)", foreground=DARK_FG, font=("TkDefaultFont", 8)).grid(row=17, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
@@ -9263,7 +9263,7 @@ class ApolloHub(tk.Tk):
                 weight_threshold_min_var.set(str(defaults.get("weight_threshold_min", 0.03)))
                 weight_threshold_max_var.set(str(defaults.get("weight_threshold_max", 0.2)))
                 volatility_ewma_var.set(str(defaults.get("volatility_ewma_decay", 0.9)))
-                weight_decay_rate_var.set(str(defaults.get("weight_decay_rate", 0.001)))
+                weight_decay_rate_var.set(str(defaults.get("weight_decay_rate", 0.0001)))
                 weight_decay_target_var.set(str(defaults.get("weight_decay_target", 1.0)))
                 age_pruning_enabled_var.set(bool(defaults.get("age_pruning_enabled", True)))
                 age_pruning_percentile_var.set(str(defaults.get("age_pruning_percentile", 0.10)))

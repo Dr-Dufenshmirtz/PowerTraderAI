@@ -687,9 +687,10 @@ weight_threshold_max = training_settings.get("weight_threshold_max", 0.2) if os.
 volatility_ewma_decay = training_settings.get("volatility_ewma_decay", 0.9) if os.path.isfile(import_path) else 0.9
 
 # Temporal decay parameters
-# Weights decay toward baseline to prevent saturation and adapt to market regime changes
+# Weights decay toward baseline when patterns need correction (not when perfect)
+# Applied only to imperfect predictions - perfect predictions preserve their weights
 # Formula: weight = weight × (1 - decay_rate) + target × decay_rate
-weight_decay_rate = training_settings.get("weight_decay_rate", 0.001) if os.path.isfile(import_path) else 0.001
+weight_decay_rate = training_settings.get("weight_decay_rate", 0.0001) if os.path.isfile(import_path) else 0.0001
 weight_decay_target = training_settings.get("weight_decay_target", 1.0) if os.path.isfile(import_path) else 1.0
 
 # Age-based pruning parameters
@@ -2488,51 +2489,47 @@ while True:
 																	high_new_weight = high_move_weights[indy] + high_adaptive_step
 																	if high_new_weight > 2.0:
 																		high_new_weight = 2.0
-																	else:
-																		pass
+																	# Apply decay when pattern needs correction (not perfect)
+																	high_new_weight = high_new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																elif high_perc_diff_now_actual < high_predicted_move_pct - high_predicted_move_pct_threshold:
 																	high_new_weight = high_move_weights[indy] - high_adaptive_step
 																	if high_new_weight < 0.0:
 																		high_new_weight = 0.0
-																	else:
-																		pass
+																	# Apply decay when pattern needs correction (not perfect)
+																	high_new_weight = high_new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																else:
+																	# Pattern prediction is perfect - preserve weight without decay
 																	high_new_weight = high_move_weights[indy]
 																if low_perc_diff_now_actual < low_predicted_move_pct - low_predicted_move_pct_threshold:
 																	low_new_weight = low_move_weights[indy] + low_adaptive_step
 																	if low_new_weight > 2.0:
 																		low_new_weight = 2.0
-																	else:
-																		pass
+																	# Apply decay when pattern needs correction (not perfect)
+																	low_new_weight = low_new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																elif low_perc_diff_now_actual > low_predicted_move_pct + low_predicted_move_pct_threshold:
 																	low_new_weight = low_move_weights[indy] - low_adaptive_step
 																	if low_new_weight < 0.0:
 																		low_new_weight = 0.0
-																	else:
-																		pass
+																	# Apply decay when pattern needs correction (not perfect)
+																	low_new_weight = low_new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																else:
+																	# Pattern prediction is perfect - preserve weight without decay
 																	low_new_weight = low_move_weights[indy]
 																if perc_diff_now_actual > predicted_move_pct + predicted_move_pct_threshold:
 																	new_weight = move_weights[indy] + main_adaptive_step
 																	if new_weight > 2.0:
 																		new_weight = 2.0
-																	else:
-																		pass
+																	# Apply decay when pattern needs correction (not perfect)
+																	new_weight = new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																elif perc_diff_now_actual < predicted_move_pct - predicted_move_pct_threshold:
 																	new_weight = move_weights[indy] - main_adaptive_step
 																	if new_weight < 0.0:
 																		new_weight = 0.0
-																	else:
-																		pass
+																	# Apply decay when pattern needs correction (not perfect)
+																	new_weight = new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																else:
+																	# Pattern prediction is perfect - preserve weight without decay
 																	new_weight = move_weights[indy]
-																
-																# Apply temporal decay toward baseline to prevent saturation and adapt to regime changes
-																# Allows weights to "forget" old adjustments if pattern isn't revalidated
-																# Formula: weight = weight × (1 - rate) + target × rate (exponential moving average)
-																new_weight = new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
-																high_new_weight = high_new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
-																low_new_weight = low_new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																
 																# Increment age counter for this pattern (tracks validation count)
 																pattern_idx = perfect_dexs[indy]
