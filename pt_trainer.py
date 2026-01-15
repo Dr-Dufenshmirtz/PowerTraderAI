@@ -161,6 +161,7 @@ _write_buffer = {
 	"thresholds": {},           # {timeframe: threshold_value}
 	"last_checkpoint_time": 0,  # timestamp of last safety checkpoint
 	"last_flush_time": 0,       # timestamp of last periodic flush
+	"volatility_ewma_decay": 0.9  # Default, will be updated from settings
 }
 
 def _read_text(path):
@@ -268,8 +269,8 @@ def flush_all_buffers(force=True):
 					# Use last buffered value as fallback
 					final_threshold = _write_buffer["thresholds"][tf_choice]
 				else:
-					# Use initial threshold as last resort
-					final_threshold = initial_perfect_threshold
+					# Use initial threshold from global buffer, or hardcoded default if early exit
+					final_threshold = _write_buffer.get("initial_perfect_threshold", 17.5)
 				debug_print(f"[DEBUG] TRAINER: No thresholds in buffer for {tf_choice}, using fallback: {final_threshold:.4f}")
 			elif len(buffer_data) == 1:
 				# Only one threshold - use it directly
@@ -278,7 +279,7 @@ def flush_all_buffers(force=True):
 			else:
 				# Calculate EWMA with exponential decay (same as volatility)
 				# Recent values get exponentially higher weight than older values
-				decay = volatility_ewma_decay  # Use same decay as volatility (0.9 default)
+				decay = _write_buffer.get("volatility_ewma_decay", 0.9)  # Use same decay as volatility (0.9 default)
 				weighted_threshold = buffer_data[0]  # Start with oldest
 				for threshold in list(buffer_data)[1:]:  # Iterate through buffer
 					weighted_threshold = (1 - decay) * threshold + decay * weighted_threshold
@@ -685,6 +686,8 @@ weight_threshold_base = training_settings.get("weight_threshold_base", 0.1) if o
 weight_threshold_min = training_settings.get("weight_threshold_min", 0.03) if os.path.isfile(import_path) else 0.03
 weight_threshold_max = training_settings.get("weight_threshold_max", 0.2) if os.path.isfile(import_path) else 0.2
 volatility_ewma_decay = training_settings.get("volatility_ewma_decay", 0.9) if os.path.isfile(import_path) else 0.9
+# Store in global buffer for access by flush_all_buffers()
+_write_buffer["volatility_ewma_decay"] = volatility_ewma_decay
 
 # Temporal decay parameters
 # Weights decay toward baseline when patterns need correction (not when perfect)
@@ -701,6 +704,8 @@ age_pruning_weight_limit = training_settings.get("age_pruning_weight_limit", 0.3
 
 # Calculate initial threshold as average of min and max (used as starting point, will be calculated per-timeframe based on volatility)
 initial_perfect_threshold = (min_threshold + max_threshold) / 2
+# Store in global buffer for access by flush_all_buffers() in case of early exit
+_write_buffer["initial_perfect_threshold"] = initial_perfect_threshold
 # bounce_accuracy_tolerance is now adaptive (calculated as 0.25x of avg_volatility per timeframe)
 # This automatically scales by timeframe and market conditions for honest accuracy measurement
 
@@ -2121,29 +2126,33 @@ while True:
 													debug_print(f"[DEBUG] TRAINER: Sigma-based age pruning removed {age_pruned} ancient patterns (age>{age_cutoff:.1f}, weight<{age_pruning_weight_limit})")
 												except Exception as age_stats_err:
 													debug_print(f"[DEBUG] TRAINER: Age stats calculation failed ({age_stats_err}), skipping age pruning")
-													_mem["memory_list"], _mem["weight_list"], _mem["high_weight_list"], _mem["low_weight_list"], ages = zip(*filtered)
-													_mem["memory_list"] = list(_mem["memory_list"])
-													_mem["weight_list"] = list(_mem["weight_list"])
-													_mem["high_weight_list"] = list(_mem["high_weight_list"])
-													_mem["low_weight_list"] = list(_mem["low_weight_list"])
-													ages = list(ages)
-													# Rebuild pre-split patterns after pruning
-													_mem["memory_patterns"] = [mem.split('{}')[0].split('|') for mem in _mem["memory_list"]]
-												else:
-													_mem["memory_list"] = []
-													_mem["weight_list"] = []
-													_mem["high_weight_list"] = []
-													_mem["low_weight_list"] = []
-													_mem["memory_patterns"] = []
-													ages = []
-												
-												# Sync age cache with pruned memory
-												_pattern_ages[tf_choice] = ages
-												_mem["dirty"] = True
-												
-												total_pruned = original_count - len(_mem["memory_list"])
-												if total_pruned > 0:
-													debug_print(f"[DEBUG] TRAINER: Total pruned {total_pruned} patterns ({original_count} -> {len(_mem['memory_list'])}) [sigma: {sigma_pruned}, age: {age_pruned}]")
+											
+											# Unpack pruned results back into memory (after both sigma and age pruning)
+											if len(filtered) > 0:
+												_mem["memory_list"], _mem["weight_list"], _mem["high_weight_list"], _mem["low_weight_list"], ages = zip(*filtered)
+												_mem["memory_list"] = list(_mem["memory_list"])
+												_mem["weight_list"] = list(_mem["weight_list"])
+												_mem["high_weight_list"] = list(_mem["high_weight_list"])
+												_mem["low_weight_list"] = list(_mem["low_weight_list"])
+												ages = list(ages)
+												# Rebuild pre-split patterns after pruning
+												_mem["memory_patterns"] = [mem.split('{}')[0].split('|') for mem in _mem["memory_list"]]
+											else:
+												# All patterns were pruned - reset to empty
+												_mem["memory_list"] = []
+												_mem["weight_list"] = []
+												_mem["high_weight_list"] = []
+												_mem["low_weight_list"] = []
+												_mem["memory_patterns"] = []
+												ages = []
+											
+											# Sync age cache with pruned memory
+											_pattern_ages[tf_choice] = ages
+											_mem["dirty"] = True
+											
+											total_pruned = original_count - len(_mem["memory_list"])
+											if total_pruned > 0:
+												debug_print(f"[DEBUG] TRAINER: Total pruned {total_pruned} patterns ({original_count} -> {len(_mem['memory_list'])}) [sigma: {sigma_pruned}, age: {age_pruned}]")
 										except Exception as e:
 											debug_print(f"[DEBUG] TRAINER: Pruning failed (non-critical): {e}")
 										

@@ -85,7 +85,7 @@ matplotlib.rcParams['font.family'] = 'sans-serif'
 matplotlib.rcParams['font.sans-serif'] = ['Segoe UI', 'Arial', 'DejaVu Sans']
 
 # Version: YY.MMDDHH (Year, Month, Day, Hour of last save)
-VERSION = "26.011508"
+VERSION = "26.011516"
 
 # Windows DPAPI encryption helpers
 def _encrypt_with_dpapi(data: str) -> bytes:
