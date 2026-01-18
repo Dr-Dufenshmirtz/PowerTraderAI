@@ -19,8 +19,8 @@ Relevant behavior notes (informational only):
 
 - Visualization:
     The hub presents predicted highs/lows (from the trainer/thinker) as
-    colored horizontal lines on charts and provides live status panels for
-    each coin.
+    colored dotted horizontal lines on charts (blue for long/support, orange
+    for short/resistance) and provides live status panels for each coin.
 
 - Coordination:
     The GUI communicates with other processes through status files and the
@@ -92,7 +92,7 @@ matplotlib.rcParams['font.family'] = 'sans-serif'
 matplotlib.rcParams['font.sans-serif'] = ['Segoe UI', 'Arial', 'DejaVu Sans']
 
 # Version: YY.MMDDHH (Year, Month, Day, Hour of last save)
-VERSION = "26.011719"
+VERSION = "26.011814"
 
 # Windows DPAPI encryption helpers
 def _encrypt_with_dpapi(data: str) -> bytes:
@@ -138,21 +138,29 @@ def _decrypt_with_dpapi(encrypted_data: bytes) -> str:
     else:
         raise RuntimeError("Failed to decrypt data with Windows DPAPI")
 
-# Default theme colors (Modern Dark)
+# ============================================================================
+# HUB UI THEME CONSTANTS
+# ============================================================================
+
+# Background colors (Modern Dark theme)
 DARK_BG = "#0D1117"
 DARK_BG2 = "#161B22"
 DARK_PANEL = "#1A1F29"
 DARK_PANEL2 = "#21262D"
 DARK_BORDER = "#30363D"
+
+# Text colors
 DARK_FG = "#E6EDF3"
 LIVE_OUTPUT_FG = "#00E5FF"  # Live output text color (bright blue like button highlights)
 DARK_MUTED = "#8B949E"
+
+# Accent colors
 DARK_ACCENT = "#FFD54F"
 DARK_ACCENT2 = "#00E5FF"
 DARK_SELECT_BG = "#2D333B"
 DARK_SELECT_FG = "#FFD54F"
 
-# Chart colors
+# Chart visualization colors
 CHART_CANDLE_UP = "#00E676"
 CHART_CANDLE_DOWN = "#FF4081"
 CHART_NEURAL_LONG = "#00E5FF"
@@ -164,7 +172,7 @@ CHART_BID_LINE = "#00E5FF"
 CHART_ACCOUNT_LINE = "#00E5FF"
 CHART_PREDICTION = "#E6EDF3"
 
-# Font settings (Modern Segoe UI)
+# Font settings
 LOG_FONT_FAMILY = "Cascadia Mono"
 LOG_FONT_SIZE = 8
 CHART_FONT_FAMILY = "Segoe UI"
@@ -580,7 +588,7 @@ class NeuralSignalTile(ttk.Frame):
     def set_values(self, long_sig: Any, short_sig: Any, inactive_count: int = 0) -> None:
         # If untrained, show greyed-out state and skip normal signal display
         if self._is_untrained:
-            self.value_lbl.config(text="NOT TRAINED")
+            self.value_lbl.config(text="L:0 S:0")
             # Grey out all segments
             for seg_id in self._long_segs + self._short_segs:
                 self.canvas.itemconfigure(seg_id, fill=DARK_MUTED)
@@ -728,8 +736,8 @@ REQUIRED_THINKER_TIMEFRAMES = [
 DEFAULT_TRAINING_CONFIG = {
     "staleness_days": 14,
     "auto_train_when_stale": True,
-    "pruning_sigma_level": 3.0,
-    "min_threshold": 10.0,
+    "pruning_sigma_level": 2.0,
+    "min_threshold": 5.0,
     "max_threshold": 25.0,
     "pattern_size": 4,
     "enable_pattern_fallback": True,
@@ -1456,6 +1464,12 @@ class CandleChart(ttk.Frame):
                         alpha=1.0,
                     )
                     self.ax.add_patch(pred_rect)
+                    
+                    # Draw predicted close as horizontal line (same color as prediction candle)
+                    try:
+                        self.ax.axhline(y=pred_c, linewidth=1.5, color=pred_color, alpha=0.8, linestyle='--')
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -1484,13 +1498,13 @@ class CandleChart(ttk.Frame):
         # Overlay Neural levels (blue long, orange short)
         for label, lv in long_levels_labeled:
             try:
-                self.ax.axhline(y=float(lv), linewidth=1, color=CHART_NEURAL_LONG, alpha=1.0)
+                self.ax.axhline(y=float(lv), linewidth=1, color=CHART_NEURAL_LONG, alpha=1.0, linestyle=':')
             except Exception:
                 pass
 
         for label, lv in short_levels_labeled:
             try:
-                self.ax.axhline(y=float(lv), linewidth=1, color=CHART_NEURAL_SHORT, alpha=1.0)
+                self.ax.axhline(y=float(lv), linewidth=1, color=CHART_NEURAL_SHORT, alpha=1.0, linestyle=':')
             except Exception:
                 pass
 
@@ -2260,9 +2274,6 @@ class ApolloHub(tk.Tk):
             # Fallback to simple geometry without position
             self.geometry("1400x820")
         
-        # Create splash screen after geometry is set (will stay on top and cover hub during initialization)
-        self.splash = self._create_splash_screen()
-
         # Set custom taskbar icon if icon.ico exists in project directory
         # This gives the app a professional appearance in Windows taskbar
         icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
@@ -2486,138 +2497,14 @@ class ApolloHub(tk.Tk):
         self.after(2000, self._auto_start_thinker_if_trained)
 
         # Maximize window after UI is fully rendered and sash positions are set
-        def _maximize_window():
-            try:
-                # Maximize main window first
-                self.state('zoomed')
-                
-                # Destroy splash screen after a delay to make transition less flashy
-                def _destroy_splash():
-                    try:
-                        if hasattr(self, 'splash') and self.splash:
-                            self.splash.destroy()
-                            self.splash = None
-                    except Exception:
-                        pass
-                
-                # Wait 2 seconds after maximizing before removing splash
-                self.after(2000, _destroy_splash)
-            except Exception:
-                pass
-        self.after(100, _maximize_window)
+        # def _maximize_window():
+        #     try:
+        #         self.state('zoomed')
+        #     except Exception:
+        #         pass
+        # self.after(100, _maximize_window)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-    def _create_splash_screen(self) -> tk.Toplevel:
-        """Create and display a splash screen while the main window loads."""
-        splash = tk.Toplevel()
-        splash.overrideredirect(True)  # Remove window decorations
-        splash.attributes('-topmost', True)  # Keep splash above main window
-        
-        # Load splash.jpg image
-        try:
-            from PIL import Image, ImageTk
-            splash_image_path = os.path.join(os.path.dirname(__file__), "splash.jpg")
-            
-            if os.path.isfile(splash_image_path):
-                # Load the splash image and resize to half size
-                img = Image.open(splash_image_path)
-                original_width, original_height = img.size
-                splash_width = original_width // 2
-                splash_height = original_height // 2
-                img = img.resize((splash_width, splash_height), Image.Resampling.LANCZOS)
-                
-                # Add border thickness
-                border_thickness = 5
-                total_width = splash_width + (border_thickness * 2)
-                total_height = splash_height + (border_thickness * 2)
-                
-                # Get screen dimensions for centering
-                screen_width = splash.winfo_screenwidth()
-                screen_height = splash.winfo_screenheight()
-                
-                # Center splash screen
-                x = (screen_width - total_width) // 2
-                y = (screen_height - total_height) // 2
-                splash.geometry(f"{total_width}x{total_height}+{x}+{y}")
-                
-                # Set background to border color
-                splash.configure(bg=DARK_ACCENT)
-                
-                # Convert image for tkinter
-                photo = ImageTk.PhotoImage(img)
-                
-                # Create container frame for image and text overlay
-                container = tk.Frame(splash, bg=DARK_ACCENT)
-                container.pack(fill="both", expand=True)
-                
-                # Create canvas to overlay text directly on image (truly transparent)
-                canvas = tk.Canvas(
-                    container,
-                    width=splash_width,
-                    height=splash_height,
-                    bg=DARK_ACCENT,
-                    highlightthickness=0
-                )
-                canvas.place(x=border_thickness, y=border_thickness)
-                
-                # Draw image on canvas
-                canvas.create_image(0, 0, anchor="nw", image=photo)
-                canvas.image = photo  # Keep reference to prevent garbage collection
-                
-                # Draw text directly on canvas (no background box)
-                canvas.create_text(
-                    splash_width - 210,
-                    splash_height - 172,
-                    text="Fueling up, prepare for launch...",
-                    font=("Segoe UI", 10, "bold"),
-                    fill=DARK_ACCENT
-                )
-                
-                # Update splash to ensure it's visible
-                splash.update()
-                
-                return splash
-        except Exception as e:
-            # If image loading fails, create a simple fallback splash
-            pass
-        
-        # Fallback splash if image loading failed
-        screen_width = splash.winfo_screenwidth()
-        screen_height = splash.winfo_screenheight()
-        splash_width = 500
-        splash_height = 300
-        x = (screen_width - splash_width) // 2
-        y = (screen_height - splash_height) // 2
-        splash.geometry(f"{splash_width}x{splash_height}+{x}+{y}")
-        splash.configure(bg=DARK_BG)
-        
-        frame = tk.Frame(splash, bg=DARK_ACCENT, bd=2, relief="solid")
-        frame.pack(fill="both", expand=True)
-        
-        inner_frame = tk.Frame(frame, bg=DARK_BG)
-        inner_frame.pack(fill="both", expand=True, padx=2, pady=2)
-        
-        title_label = tk.Label(
-            inner_frame,
-            text="APOLLO TRADER",
-            font=("Segoe UI", 36, "bold"),
-            bg=DARK_BG,
-            fg=DARK_ACCENT
-        )
-        title_label.pack(pady=(80, 10))
-        
-        version_label = tk.Label(
-            inner_frame,
-            text=f"Version {VERSION}",
-            font=("Segoe UI", 12),
-            bg=DARK_BG,
-            fg=DARK_FG
-        )
-        version_label.pack(pady=(0, 80))
-        
-        splash.update()
-        return splash
 
     # Theme styling methods
     def _apply_forced_dark_mode(self) -> None:
@@ -9797,7 +9684,7 @@ class ApolloHub(tk.Tk):
 
         # Minimum threshold
         ttk.Label(learning_frame, text="Min threshold (%):").grid(row=6, column=0, sticky="w", padx=(0, 10), pady=6)
-        min_threshold_var = tk.StringVar(value=str(cfg.get("min_threshold", 10.0)))
+        min_threshold_var = tk.StringVar(value=str(cfg.get("min_threshold", 5.0)))
         ttk.Entry(learning_frame, textvariable=min_threshold_var, width=15).grid(row=6, column=1, sticky="w", pady=6)
 
         ttk.Label(
@@ -9809,7 +9696,7 @@ class ApolloHub(tk.Tk):
 
         # Maximum threshold
         ttk.Label(learning_frame, text="Max threshold (%):").grid(row=8, column=0, sticky="w", padx=(0, 10), pady=6)
-        max_threshold_var = tk.StringVar(value=str(cfg.get("max_threshold", 20.0)))
+        max_threshold_var = tk.StringVar(value=str(cfg.get("max_threshold", 25.0)))
         ttk.Entry(learning_frame, textvariable=max_threshold_var, width=15).grid(row=8, column=1, sticky="w", pady=6)
 
         ttk.Label(
@@ -9821,7 +9708,7 @@ class ApolloHub(tk.Tk):
 
         ttk.Label(
             learning_frame,
-            text="Note: Threshold is RELATIVE (% of pattern value). Formula: min(max_threshold, 4.0 × volatility), clamped to [min, max].\nExample: 5% pattern with 20% threshold matches 4% to 6% (±1% absolute range).",
+            text="Note: Threshold is RELATIVE (% of pattern value). Formula: min(max_threshold, 5.0 × volatility), clamped to [min, max].\nExample: 5% pattern with 20% threshold matches 4% to 6% (±1% absolute range).",
             foreground=DARK_FG,
             font=("TkDefaultFont", 8, "italic"),
             wraplength=550
@@ -9892,7 +9779,7 @@ class ApolloHub(tk.Tk):
 
         # Pruning sigma level (moved from Pattern Quality)
         ttk.Label(advanced_frame, text="Pruning sigma level:").grid(row=20, column=0, sticky="w", padx=(0, 10), pady=6)
-        pruning_sigma_var = tk.StringVar(value=str(cfg.get("pruning_sigma_level", 3.0)))
+        pruning_sigma_var = tk.StringVar(value=str(cfg.get("pruning_sigma_level", 2.0)))
         ttk.Entry(advanced_frame, textvariable=pruning_sigma_var, width=15).grid(row=20, column=1, sticky="w", pady=6)
 
         ttk.Label(
@@ -10216,7 +10103,7 @@ class ApolloHub(tk.Tk):
                 auto_train_var.set(bool(defaults.get("auto_train_when_stale", False)))
                 min_threshold_var.set(str(defaults.get("min_threshold", 5.0)))
                 max_threshold_var.set(str(defaults.get("max_threshold", 25.0)))
-                pruning_sigma_var.set(str(defaults.get("pruning_sigma_level", 3.0)))
+                pruning_sigma_var.set(str(defaults.get("pruning_sigma_level", 2.0)))
                 pattern_size_var.set(str(defaults.get("pattern_size", 4)))
                 enable_fallback_var.set(bool(defaults.get("enable_pattern_fallback", True)))
                 threshold_enforcement_var.set(defaults.get("threshold_enforcement", "Balanced"))

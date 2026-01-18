@@ -32,7 +32,7 @@ So what exactly does that mean?
 
 When people think AI, they usually think about LLM style AIs and neural networks. What many people don't realize is there are many types of Artificial Intelligence and Machine Learning - and the one in my trading system falls under the "Other" category.
 
-When training for a coin, it goes through the entire history for that coin on multiple timeframes and saves each pattern it sees, along with what happens on the next candle AFTER the pattern. It uses these saved patterns to generate a predicted candle by taking a weighted average of the closest matches in memory to the current pattern in time. This weighted average output is done once for each timeframe, from 1 hour up to 1 week. Each timeframe gets its own predicted candle. The low and high prices from these candles are what are shown as the blue and orange horizontal lines on the price charts. 
+When training for a coin, it goes through the entire history for that coin on multiple timeframes and saves each pattern it sees, along with what happens on the next candle AFTER the pattern. It uses these saved patterns to generate a predicted candle by taking a weighted average of the closest matches in memory to the current pattern in time. This weighted average output is done once for each timeframe, from 1 hour up to 1 week. Each timeframe gets its own predicted candle. The low and high prices from these candles are what are shown as the blue and orange dotted horizontal lines on the price charts. 
 
 After a candle closes, it checks what happened against what it predicted, and adjusts the weight for each "memory pattern" that was used to generate the weighted average, depending on how accurate each pattern was compared to what actually happened.
 
@@ -41,6 +41,8 @@ Yes, it is EXTREMELY simple. Yes, it is STILL AI.
 Here is how the trading bot utilizes the price prediction ai to automatically make trades:
 
 For determining when to start trades, the AI's Thinker script sends a signal to start a trade for a coin if the ask price for the coin drops below at least 3 of the the AI's predicted low prices for the coin (it predicts the currently active candle's high and low prices for each timeframe across all timeframes from 1hr to 1wk). **This threshold can be customized** in the Trading Settings (default: LONG signal minimum of 3, SHORT signal maximum of 0).
+
+**Buy Priority (Multiple Qualifying Coins):** When multiple coins meet entry criteria simultaneously, the system uses an opportunity scoring algorithm: each coin is scored by its LONG signal strength (0-7), and the coin with the highest score gets priority. In case of a tie, the original coin list order acts as the tiebreaker. This ensures the bot always opens the strongest signal opportunity first, rather than simply processing coins sequentially.
 
 For determining when to DCA, it uses either the current price level from the AI that is tied to the current amount of DCA buys that have been done on the trade (for example, right after a trade starts when 3 blue lines get crossed, its first DCA wont happen until the price crosses the 4th line, so on so forth), or it uses the configurable drawdown % for its current level, whichever it hits first. **Default DCA levels: -2.5%, -5.0%, -10.0%, -20.0%** (4 levels). It allows a max of 2 DCAs within a rolling 24hr window to keep from dumping all of your money in too quickly on coins that are having an extended downtrend! **DCA levels and limits can be customized** in the Trading Settings.
 
@@ -350,7 +352,7 @@ The Enhanced Edition includes robust error recovery and improved AI pattern matc
 ### Chart & UI Improvements
 - **Centered Window Positioning**: Window always opens within visible screen area
 - **Chart Refresh Rate**: Configurable update interval (default: 10 seconds)
-- **Neural Level Display**: Shows only timeframe labels on chart (1h, 2h, etc.) with automatic overlap hiding
+- **Neural Level Display**: Shows only timeframe labels on chart (1h, 2h, etc.) with automatic overlap hiding. Neural levels rendered as dotted lines (blue for long/support, orange for short/resistance) to visually differentiate from other chart elements.
 - **Last Neurals Timestamp**: Charts display when neural predictions were last updated
 - **Prediction Candles**: AI-generated future candle showing expected price action across all timeframes. Displayed as white filled candle extending beyond current price data. OHLC values represent multi-timeframe consensus prediction.
 - **Optimized Padding**: Improved chart margins for better label visibility

@@ -28,7 +28,7 @@ Key behavioral notes (informational only):
 	scale-invariant behavior across different price levels. Thresholds are
 	automatically adjusted based on volatility (5.0× average volatility) and
 	clamped to configured min/max bounds. Zero/tiny patterns use a
-	volatility-adaptive baseline (0.05× volatility, typically ~0.1%) to
+	volatility-adaptive baseline (0.1× volatility, typically ~0.4%) to
 	prevent division-by-zero. Directionality-agnostic using abs() for both
 	bull and bear patterns.
 
@@ -73,12 +73,47 @@ market = Market(url='https://api.kucoin.com')
 # KuCoin API constants
 KUCOIN_MAX_CANDLES = 1500  # Maximum candles per API request
 
-# Training algorithm constants
-DEFAULT_VOLATILITY = 2.0  # Default volatility fallback (typical crypto volatility %)
+# ============================================================================
+# TRAINER ALGORITHM CONSTANTS
+# ============================================================================
+
+# Volatility and threshold calculation
+DEFAULT_VOLATILITY = 4.0  # Default volatility fallback (typical crypto high-low range %)
 VOLATILITY_THRESHOLD_MULTIPLIER = 5.0  # Multiplier for volatility-based threshold calculation
 BOUNCE_TOLERANCE_MULTIPLIER = 0.25  # Multiplier for adaptive bounce tolerance (fraction of volatility)
+BOUNCE_TOLERANCE_MINIMUM = 0.5  # Minimum baseline threshold percentage (prevents too-tight filtering)
 DEFAULT_EWMA_DECAY = 0.9  # Exponential moving average decay factor for volatility smoothing
-DEFAULT_PRUNING_SIGMA = 3.0  # Standard deviations below mean for pattern pruning
+
+# Pattern matching and learning
+BASE_KERNEL_BANDWIDTH = 2.5  # Kernel bandwidth for distance-based weighting (matches thinker behavior)
+DEFAULT_PRUNING_SIGMA = 2.0  # Standard deviations below mean for pattern pruning
+PRUNING_WEIGHT_FLOOR = 0.05  # Minimum weight threshold for pruning (always remove patterns below this)
+
+# Weight system (learning rate and bounds)
+WEIGHT_MIN = 0.0  # Minimum allowed weight value (patterns with zero weight are filtered)
+WEIGHT_MAX = 2.0  # Maximum allowed weight value (clamps learning updates)
+WEIGHT_FACTOR_MULTIPLIER = 2.0  # Multiplier for weight factor calculation in adaptive thresholds
+WEIGHT_FACTOR_MIN = 0.5  # Minimum weight factor clamp (prevents division by zero)
+ERROR_MAGNITUDE_MIN = 0.1  # Minimum error magnitude for calculations (prevents division by zero)
+
+# Training window sizes
+RECENT_ACCURACY_WINDOW = 100  # Number of recent predictions to calculate current accuracy
+MAX_VOLATILITY_WINDOW = 500  # Maximum window size for volatility calculation
+MIN_VOLATILITY_WINDOW = 10  # Minimum window size for volatility calculation
+VOLATILITY_WINDOW_FRACTION = 0.1  # Fraction of total data to use for volatility window
+INITIAL_SKIP_MIN = 12  # Minimum number of candles to skip at training start
+INITIAL_SKIP_FRACTION = 0.02  # Fraction of data to skip at training start (warm-up period)
+
+# API rate limiting
+API_DELAY_BASE = 0.4  # Base delay between API calls in seconds
+API_DELAY_FALLBACK = 0.5  # Fallback delay if calculation fails
+
+# Accuracy trend detection
+ADAPTIVE_THRESHOLD_MIN = 0.05  # Minimum adaptive threshold percentage
+ADAPTIVE_THRESHOLD_MAX = 0.5  # Maximum adaptive threshold percentage
+
+# Percentage conversion
+PERCENT_MULTIPLIER = 100  # Multiplier to convert decimal to percentage
 
 # Debug mode support - look in parent directory (project root) for gui_settings.json
 # The trainer runs in coin subfolders (BTC/, ETH/, etc.) but settings are in root
@@ -723,7 +758,7 @@ tf_minutes = [tf_minutes_map.get(tf, 60) for tf in tf_choices]
 # Load training parameter settings with defaults
 staleness_days = training_settings.get("staleness_days", 14) if os.path.isfile(import_path) else 14
 pruning_sigma_level = training_settings.get("pruning_sigma_level", DEFAULT_PRUNING_SIGMA) if os.path.isfile(import_path) else DEFAULT_PRUNING_SIGMA
-min_threshold = training_settings.get("min_threshold", 10.0) if os.path.isfile(import_path) else 10.0
+min_threshold = training_settings.get("min_threshold", 5.0) if os.path.isfile(import_path) else 5.0
 max_threshold = training_settings.get("max_threshold", 25.0) if os.path.isfile(import_path) else 25.0
 pattern_size = training_settings.get("pattern_size", 4) if os.path.isfile(import_path) else 4
 enable_pattern_fallback = training_settings.get("enable_pattern_fallback", True) if os.path.isfile(import_path) else True
@@ -966,6 +1001,7 @@ for current_pattern_size in pattern_sizes_to_train:
 		upordown3 = []
 		upordown4 = []
 		upordown_signal = []  # Track signal directional accuracy
+		prediction_queue = []  # Store predictions to check later: [{candle_idx, high_pred, low_pred, pattern_len, start_price}]
 		debug_print(f"[DEBUG] TRAINER: Starting timeframe {tf_choices[the_big_index]} (index {the_big_index}/{len(tf_choices)-1})")
 		tf_choice = tf_choices[the_big_index]
 		
@@ -1036,7 +1072,7 @@ for current_pattern_size in pattern_sizes_to_train:
 				settings = json.load(f)
 				num_coins = len(settings.get("coins", []))
 				# Scale delay: 0.4s per coin so N coins collectively stay under 3 req/sec
-				api_delay = max(0.4, 0.4 * num_coins) if num_coins > 0 else 0.5
+				api_delay = max(API_DELAY_BASE, API_DELAY_BASE * num_coins) if num_coins > 0 else 0.5
 		except Exception:
 			api_delay = 0.5  # Fallback to conservative delay
 	
@@ -1244,7 +1280,7 @@ for current_pattern_size in pattern_sizes_to_train:
 			total_candles = len(history_list)
 			if parse_error_count > 0:
 				print(f"Parsed {successful_parses}/{total_candles} candles successfully ({parse_error_count} errors)")
-				parse_success_rate = (successful_parses / total_candles * 100) if total_candles > 0 else 0
+				parse_success_rate = (successful_parses / total_candles * PERCENT_MULTIPLIER) if total_candles > 0 else 0
 				if parse_success_rate < 80:  # Less than 80% success is concerning
 					error_msg = f"ERROR: Parse success rate too low ({parse_success_rate:.1f}%) for {timeframe}. Data quality insufficient for training."
 					print(error_msg)
@@ -1254,7 +1290,7 @@ for current_pattern_size in pattern_sizes_to_train:
 			# Store for later display in training progress
 			# Only count candles actually attempted (from starting_index onwards, not all fetched)
 			candles_attempted = len(history_list) - starting_index
-			api_acceptance_rate = (successful_parses / candles_attempted * 100) if candles_attempted > 0 else 100.0
+			api_acceptance_rate = (successful_parses / candles_attempted * PERCENT_MULTIPLIER) if candles_attempted > 0 else 100.0
 		
 			# Validate we have historical data before proceeding
 			if len(price_list) == 0 or len(high_price_list) == 0 or len(low_price_list) == 0 or len(open_price_list) == 0:
@@ -1311,7 +1347,7 @@ for current_pattern_size in pattern_sizes_to_train:
 		# Skip first 2% of candles to avoid volatile startup period (minimum 12)
 		# Crypto data often has extreme volatility in first 1-2% of historical data
 		# This prevents poor-quality patterns from contaminating the training set
-		initial_skip = max(12, int(len(price_list) * 0.02))
+		initial_skip = max(INITIAL_SKIP_MIN, int(len(price_list) * INITIAL_SKIP_FRACTION))
 		price_list_length = initial_skip + 1
 		last_printed_candle = 0  # Track last candle we printed status for
 		last_printed_accuracy = None  # Track accuracy at last print for trend arrows
@@ -1437,17 +1473,17 @@ for current_pattern_size in pattern_sizes_to_train:
 						# Throttle timeframe printing - only show at start and every 1% of candles
 						total_candles = len(price_list)
 						current_candle = price_list_length
-						print_interval = max(1, total_candles // 100)  # 1% intervals, minimum 1
+						print_interval = max(1, total_candles // PERCENT_MULTIPLIER)  # 1% intervals, minimum 1
 					
 						# Print if this is a new milestone we haven't printed yet
 						if current_candle != last_printed_candle and (current_candle == 1 or current_candle % print_interval == 0 or current_candle == total_candles):
 							print()
-							percent_complete = int((current_candle / total_candles) * 100)
+							percent_complete = int((current_candle / total_candles) * PERCENT_MULTIPLIER)
 							pattern_count = len(_mem["memory_list"])
 							# Calculate match rate (what % of processing reused existing patterns)
 							total_processed = matched_pattern_count + new_pattern_count
 							if total_processed > 0:
-								match_rate = (matched_pattern_count / total_processed) * 100
+								match_rate = (matched_pattern_count / total_processed) * PERCENT_MULTIPLIER
 								print(f'Timeframe and Pattern: {timeframe} - {current_pattern_size}candle ({percent_complete}% complete)')
 								print(f'Training on timeframe data, {pattern_count:,} patterns learned ({match_rate:.1f}% matching)')
 							else:
@@ -1549,11 +1585,17 @@ for current_pattern_size in pattern_sizes_to_train:
 											new_memory = 'yes'
 											debug_print(f"[DEBUG] TRAINER: No perfect match found (threshold={perfect_threshold:.2f}% relative tolerance), will create new pattern")
 										else:
-											try:
-												final_moves = sum(moves)/len(moves)
-												high_final_moves = sum(high_moves)/len(high_moves)
-												low_final_moves = sum(low_moves)/len(low_moves)
-											except:
+											# Check if we have valid weighted predictions (zero-weight filtering may empty lists)
+											if moves and high_moves and low_moves:
+												# Kernel-weighted average (closer matches weighted exponentially higher)
+												# Matches thinker behavior: exp(-distance / (threshold × bandwidth))
+												kernel_weights = [math.exp(-d / (perfect_threshold * BASE_KERNEL_BANDWIDTH)) for d in perfect_diffs]
+												total_weight = sum(kernel_weights)
+												final_moves = sum(m * w for m, w in zip(moves, kernel_weights)) / total_weight
+												high_final_moves = sum(h * w for h, w in zip(high_moves, kernel_weights)) / total_weight
+												low_final_moves = sum(l * w for l, w in zip(low_moves, kernel_weights)) / total_weight
+											else:
+												# All patterns had zero weight - no valid predictions
 												final_moves = 0.0
 												high_final_moves = 0.0
 												low_final_moves = 0.0
@@ -1573,13 +1615,13 @@ for current_pattern_size in pattern_sizes_to_train:
 										current_candle = float(current_pattern[check_dex])
 										memory_candle = float(memory_pattern[check_dex])
 										# Relative percentage difference (threshold applies as % of pattern value)
-										# Example: memory=5%, current=6%, threshold=15% → diff = |6-5|/5 * 100 = 20% > 15% (no match)
-										# Example: memory=5%, current=5.5%, threshold=15% → diff = |5.5-5|/5 * 100 = 10% < 15% (match)
+										# Example: memory=5%, current=6%, threshold=15% → diff = |6-5|/5 * PERCENT_MULTIPLIER = 20% > 15% (no match)
+										# Example: memory=5%, current=5.5%, threshold=15% → diff = |5.5-5|/5 * PERCENT_MULTIPLIER = 10% < 15% (match)
 										# This scales precision: small moves get tight absolute tolerances, large moves get proportional tolerances
 										# Use volatility-adaptive baseline to handle zero/tiny patterns consistently
 										# Scales noise floor with market: high volatility → higher baseline, low volatility → tighter baseline
-										baseline = max(abs(memory_candle), 0.05 * avg_volatility)
-										difference = (abs(current_candle - memory_candle) / baseline) * 100
+										baseline = max(abs(memory_candle), 0.1 * avg_volatility)
+										difference = (abs(current_candle - memory_candle) / baseline) * PERCENT_MULTIPLIER
 										checks.append(difference)
 							
 									if len(checks) == 0:
@@ -1591,17 +1633,21 @@ for current_pattern_size in pattern_sizes_to_train:
 									if diff_avg <= perfect_threshold:
 										any_perfect = 'yes'
 										# String cleaning already done in load_memory() - just remove spaces and split
-										high_diff = float(memory_list[memory_index].split('{}')[1].replace(' ',''))/100
-										low_diff = float(memory_list[memory_index].split('{}')[2].replace(' ',''))/100
+										high_diff = float(memory_list[memory_index].split('{}')[1].replace(' ',''))/PERCENT_MULTIPLIER
+										low_diff = float(memory_list[memory_index].split('{}')[2].replace(' ',''))/PERCENT_MULTIPLIER
 										unweighted.append(float(memory_pattern[len(memory_pattern)-1]))
 										move_weights.append(float(weight_list[memory_index]))
 										high_move_weights.append(float(high_weight_list[memory_index]))
 										low_move_weights.append(float(low_weight_list[memory_index]))
 										high_unweighted.append(high_diff)
 										low_unweighted.append(low_diff)
-										moves.append(float(memory_pattern[len(memory_pattern)-1])*float(weight_list[memory_index]))
-										high_moves.append(high_diff*float(high_weight_list[memory_index]))
-										low_moves.append(low_diff*float(low_weight_list[memory_index]))
+										# Zero-weight filtering: only include patterns with non-zero weights (matches thinker behavior)
+										if float(weight_list[memory_index]) != 0.0:
+											moves.append(float(memory_pattern[len(memory_pattern)-1])*float(weight_list[memory_index]))
+										if float(high_weight_list[memory_index]) != 0.0:
+											high_moves.append(high_diff*float(high_weight_list[memory_index]))
+										if float(low_weight_list[memory_index]) != 0.0:
+											low_moves.append(low_diff*float(low_weight_list[memory_index]))
 										perfect_dexs.append(memory_index)
 										perfect_diffs.append(diff_avg)
 									else:
@@ -1638,10 +1684,10 @@ for current_pattern_size in pattern_sizes_to_train:
 					
 						# Calculate current accuracy from recent perfect predictions
 						# Look at last 100 predictions to get recent performance
-						recent_window = min(100, len(perfect))
+						recent_window = min(RECENT_ACCURACY_WINDOW, len(perfect))
 						if recent_window > 0:
 							recent_perfect_count = perfect[-recent_window:].count('yes')
-							current_accuracy = (recent_perfect_count / recent_window) * 100
+							current_accuracy = (recent_perfect_count / recent_window) * PERCENT_MULTIPLIER
 						else:
 							current_accuracy = 0.0
 					
@@ -1649,19 +1695,35 @@ for current_pattern_size in pattern_sizes_to_train:
 						# Use RMS (root mean square) of high-low range as volatility measure
 						# High-low range captures true intraday volatility for 24/7 crypto markets
 						# Used for adaptive threshold bounds and volatility-adaptive k-selection
-						volatility_window = min(500, max(10, int(len(price_change_list) * 0.1)))
-						if len(price_change_list) >= volatility_window:
-							recent_changes = price_change_list[-volatility_window:]
+						volatility_window = min(MAX_VOLATILITY_WINDOW, max(MIN_VOLATILITY_WINDOW, int(len(price_list2) * VOLATILITY_WINDOW_FRACTION)))
+						if len(price_list2) >= volatility_window + 1:  # Need both high and low lists
+							# Calculate high-low range as percentage of low price for each candle
+							high_low_ranges = []
+							for i in range(-volatility_window, 0):
+								if low_price_list2[i] != 0:
+									range_pct = ((high_price_list2[i] - low_price_list2[i]) / low_price_list2[i]) * PERCENT_MULTIPLIER
+									high_low_ranges.append(range_pct)
 							# RMS volatility: sqrt(mean(squared_ranges))
-							avg_volatility = math.sqrt(sum(x**2 for x in recent_changes) / len(recent_changes))
+							if len(high_low_ranges) > 0:
+								avg_volatility = math.sqrt(sum(x**2 for x in high_low_ranges) / len(high_low_ranges))
+							else:
+								avg_volatility = DEFAULT_VOLATILITY
 						else:
 							# Fallback for early training: use all available data
-							if len(price_change_list) > 0:
-								avg_volatility = math.sqrt(sum(x**2 for x in price_change_list) / len(price_change_list))
+							if len(price_list2) > 1:
+								high_low_ranges = []
+								for i in range(len(price_list2)):
+									if low_price_list2[i] != 0:
+										range_pct = ((high_price_list2[i] - low_price_list2[i]) / low_price_list2[i]) * PERCENT_MULTIPLIER
+										high_low_ranges.append(range_pct)
+								if len(high_low_ranges) > 0:
+									avg_volatility = math.sqrt(sum(x**2 for x in high_low_ranges) / len(high_low_ranges))
+								else:
+									avg_volatility = DEFAULT_VOLATILITY
 							else:
 								avg_volatility = DEFAULT_VOLATILITY  # Default fallback (typical crypto high-low range volatility)
 					
-						debug_print(f"[DEBUG] TRAINER: Calculated avg_volatility={avg_volatility:.3f}% (window={volatility_window})")
+						debug_print(f"[DEBUG] TRAINER: Calculated avg_volatility={avg_volatility:.3f}% from high-low ranges (window={volatility_window})")
 					
 						# Initialize volatility cache for adaptive thresholds
 						if cache_key not in _volatility_cache:
@@ -1713,7 +1775,7 @@ for current_pattern_size in pattern_sizes_to_train:
 							# N prices → (N-1) percentage changes
 							for i in range(1, len(temp_absolute_prices)):
 								if temp_absolute_prices[i-1] != 0:
-									pct_change = ((temp_absolute_prices[i] - temp_absolute_prices[i-1]) / temp_absolute_prices[i-1]) * 100
+									pct_change = ((temp_absolute_prices[i] - temp_absolute_prices[i-1]) / temp_absolute_prices[i-1]) * PERCENT_MULTIPLIER
 								else:
 									pct_change = 0.0
 								current_pattern.append(pct_change)
@@ -1736,7 +1798,7 @@ for current_pattern_size in pattern_sizes_to_train:
 						if 1==1:
 							while True:
 								try:
-									c_diff = final_moves/100
+									c_diff = final_moves/PERCENT_MULTIPLIER
 									high_diff = high_final_moves
 									low_diff = low_final_moves
 									# Use last_actual_price instead of current_pattern (which now contains % changes)
@@ -1855,7 +1917,7 @@ for current_pattern_size in pattern_sizes_to_train:
 							fallback_last_price = 0.0
 							for i in range(1, len(temp_fallback_prices)):
 								if temp_fallback_prices[i-1] != 0:
-									pct_change = ((temp_fallback_prices[i] - temp_fallback_prices[i-1]) / temp_fallback_prices[i-1]) * 100
+									pct_change = ((temp_fallback_prices[i] - temp_fallback_prices[i-1]) / temp_fallback_prices[i-1]) * PERCENT_MULTIPLIER
 								else:
 									pct_change = 0.0
 								current_pattern.append(pct_change)
@@ -1914,20 +1976,20 @@ for current_pattern_size in pattern_sizes_to_train:
 								try:
 									difference_of_actuals = last_actual-new_y[0]
 									difference_of_last = last_actual-last_prediction
-									percent_difference_of_actuals = ((new_y[0]-last_actual)/abs(last_actual))*100
+									percent_difference_of_actuals = ((new_y[0]-last_actual)/abs(last_actual))*PERCENT_MULTIPLIER
 									high_difference_of_actuals = last_actual-high_current_price
-									high_percent_difference_of_actuals = ((high_current_price-last_actual)/abs(last_actual))*100
+									high_percent_difference_of_actuals = ((high_current_price-last_actual)/abs(last_actual))*PERCENT_MULTIPLIER
 									low_difference_of_actuals = last_actual-low_current_price
-									low_percent_difference_of_actuals = ((low_current_price-last_actual)/abs(last_actual))*100
-									percent_difference_of_last = ((last_prediction-last_actual)/abs(last_actual))*100
-									high_percent_difference_of_last = ((high_last_prediction-last_actual)/abs(last_actual))*100
-									low_percent_difference_of_last = ((low_last_prediction-last_actual)/abs(last_actual))*100
+									low_percent_difference_of_actuals = ((low_current_price-last_actual)/abs(last_actual))*PERCENT_MULTIPLIER
+									percent_difference_of_last = ((last_prediction-last_actual)/abs(last_actual))*PERCENT_MULTIPLIER
+									high_percent_difference_of_last = ((high_last_prediction-last_actual)/abs(last_actual))*PERCENT_MULTIPLIER
+									low_percent_difference_of_last = ((low_last_prediction-last_actual)/abs(last_actual))*PERCENT_MULTIPLIER
 									if in_trade == 'no':
-										percent_for_no_sell = ((new_y[1]-last_actual)/abs(last_actual))*100
+										percent_for_no_sell = ((new_y[1]-last_actual)/abs(last_actual))*PERCENT_MULTIPLIER
 										og_actual = last_actual
 										in_trade = 'yes'
 									else:
-										percent_for_no_sell = ((new_y[1]-og_actual)/abs(og_actual))*100
+										percent_for_no_sell = ((new_y[1]-og_actual)/abs(og_actual))*PERCENT_MULTIPLIER
 								except:
 									difference_of_actuals = 0.0
 									difference_of_last = 0.0
@@ -1955,83 +2017,94 @@ for current_pattern_size in pattern_sizes_to_train:
 										else:
 											continue
 								if last_flipped == 'no':
-									# BOUNCE ACCURACY: Tracks candles where price came WITHIN tolerance of predicted limits
-									# Success (1) = price approached limit (within tolerance) and close bounced back (respected the level)
-									# Failure (0) = price approached limit (within tolerance) and close broke through
-									# Tolerance: adaptive based on volatility (BOUNCE_TOLERANCE_MULTIPLIER× typical candle range)
-									# This scales automatically: tight for 1hr, wider for 1day, adapts to market conditions
-									tolerance = BOUNCE_TOLERANCE_MULTIPLIER * avg_volatility
+									# LIMIT-BREACH ACCURACY: Tracks if predicted range contains the actual close
+									# Only tracks significant predictions (both high and low > baseline) to filter baseline noise
+									# Success (1) = close stayed within predicted range [low, high]
+									# Failure (0) = close broke beyond predicted high OR below predicted low
+									baseline_threshold = max(BOUNCE_TOLERANCE_MINIMUM, BOUNCE_TOLERANCE_MULTIPLIER * avg_volatility)  # Floor at 0.5%
 								
-									# Case 1: Price came within tolerance of predicted HIGH limit
-									if abs(high_percent_difference_of_actuals - high_baseline_price_change_pct) <= tolerance:
-										if percent_difference_of_actuals < high_baseline_price_change_pct:
-											# Close stayed below predicted high = BOUNCE/RESISTANCE (SUCCESS)
+									# Only track if BOTH predictions are significant (filters out baseline noise)
+									if abs(high_baseline_price_change_pct) > baseline_threshold and abs(low_baseline_price_change_pct) > baseline_threshold:
+										# Check if close stayed within predicted range
+										if low_baseline_price_change_pct <= percent_difference_of_actuals <= high_baseline_price_change_pct:
+											# Close stayed within predicted range = SUCCESS (range contained price)
 											upordown3.append(1)
 											upordown.append(1)
 											upordown4.append(1)
 										else:
-											# Close broke above predicted high = BREAKOUT (FAILURE)
+											# Close broke beyond predicted range = FAILURE (breach)
 											upordown3.append(0)
 											upordown2.append(0)
 											upordown.append(0)
 											upordown4.append(0)
-								
-									# Case 2: Price came within tolerance of predicted LOW limit
-									elif abs(low_percent_difference_of_actuals - low_baseline_price_change_pct) <= tolerance:
-										if percent_difference_of_actuals > low_baseline_price_change_pct:
-											# Close stayed above predicted low = BOUNCE/SUPPORT (SUCCESS)
-											upordown.append(1)
-											upordown3.append(1)
-											upordown4.append(1)
-										else:
-											# Close broke below predicted low = BREAKDOWN (FAILURE)
-											upordown3.append(0)
-											upordown2.append(0)
-											upordown.append(0)
-											upordown4.append(0)
-								
-									else:
-										# Price did not come within tolerance of either limit - not tracked for bounce accuracy
-										pass
-								
-									# SIGNAL ACCURACY: Tracks directional accuracy for trade-signal predictions
-									# Only tracks when price approached predicted limits (would trigger a trade)
-									# BUY signal (high limit) → price went up = SUCCESS
-									# SELL signal (low limit) → price went down = SUCCESS
-									try:
-										# High limit approached = BUY signal (predicted strong UP move)
-										if high_percent_difference_of_actuals >= high_baseline_price_change_pct + tolerance:
-											# Check if price actually closed higher (went up as predicted)
-											if percent_difference_of_actuals > 0:
-												upordown_signal.append(1)  # Correct: BUY signal, price went up
-											else:
-												upordown_signal.append(0)  # Wrong: BUY signal, but price went down/flat
 									
-										# Low limit approached = SELL signal (predicted strong DOWN move)
-										elif low_percent_difference_of_actuals <= low_baseline_price_change_pct - tolerance:
-											# Check if price actually closed lower (went down as predicted)
-											if percent_difference_of_actuals < 0:
-												upordown_signal.append(1)  # Correct: SELL signal, price went down
-											else:
-												upordown_signal.append(0)  # Wrong: SELL signal, but price went up/flat
+									# SIGNAL ACCURACY: Check predictions from pattern_length candles ago
+									# Backward-looking: checks if prediction made N candles ago was correct over N candles
+									current_candle_idx = len(price_list2) - 1
+									predictions_to_remove = []
 									
-										# If no limit approached, don't track (not a trade signal)
-									except NameError:
-										# baseline_price_change_pct not yet defined (first iteration) - skip signal tracking
-										pass
+									for i, pred in enumerate(prediction_queue):
+										# Check if this prediction is due (current candle = prediction candle + pattern length)
+										if current_candle_idx == pred['candle_idx'] + pred['pattern_len']:
+											# Check if price reached predicted level at ANY point during pattern_length candles
+											try:
+												# Only track if BOTH predictions were significant
+												if abs(pred['high_pred']) > baseline_threshold and abs(pred['low_pred']) > baseline_threshold:
+													# Calculate minimum tradeable movement (baseline/2)
+													min_move_threshold = baseline_threshold / 2.0
+													
+													# Determine predicted direction by stronger side
+													if abs(pred['high_pred']) > abs(pred['low_pred']):
+														# Bullish prediction - check if ANY candle moved UP by at least min_move_threshold
+														success = False
+														min_price_target = pred['start_price'] * (1 + min_move_threshold / PERCENT_MULTIPLIER)
+														for candle_idx in range(pred['candle_idx'] + 1, current_candle_idx + 1):
+															if candle_idx < len(high_price_list2):
+																if high_price_list2[candle_idx] >= min_price_target:
+																	success = True
+																	break
+														
+														if success:
+															upordown_signal.append(1)  # SUCCESS: moved upward by tradeable amount
+														else:
+															upordown_signal.append(0)  # FAILURE: never moved up enough
+													else:
+														# Bearish prediction - check if ANY candle moved DOWN by at least min_move_threshold
+														success = False
+														max_price_target = pred['start_price'] * (1 - min_move_threshold / PERCENT_MULTIPLIER)
+														for candle_idx in range(pred['candle_idx'] + 1, current_candle_idx + 1):
+															if candle_idx < len(low_price_list2):
+																if low_price_list2[candle_idx] <= max_price_target:
+																	success = True
+																	break
+														
+														if success:
+															upordown_signal.append(1)  # SUCCESS: moved downward by tradeable amount
+														else:
+															upordown_signal.append(0)  # FAILURE: never moved down enough
+												
+												# Mark for removal (checked)
+												predictions_to_remove.append(i)
+											except (IndexError, ZeroDivisionError):
+												# Candle not available yet or division by zero
+												pass
+									
+									# Remove checked predictions (reverse order to preserve indices)
+									for i in reversed(predictions_to_remove):
+										prediction_queue.pop(i)
 								else:
 									pass
 							
 								# Calculate and store signal accuracy if we have data
 								if len(upordown_signal) > 0:
-									signal_accuracy = (sum(upordown_signal)/len(upordown_signal))*100
+									signal_accuracy = (sum(upordown_signal)/len(upordown_signal))*PERCENT_MULTIPLIER
 								
 									# Store signal accuracy in dict for this timeframe
 									signal_accuracy_dict[tf_choice] = signal_accuracy
 							
 								# Calculate and store bounce accuracy if we have data (for later printing)
 								if len(upordown4) > 0:
-									accuracy = (sum(upordown4)/len(upordown4))*100
+									accuracy = (sum(upordown4)/len(upordown4))*PERCENT_MULTIPLIER
 								
 									# Store accuracy in dict for this timeframe
 									bounce_accuracy_dict[tf_choice] = accuracy
@@ -2039,7 +2112,7 @@ for current_pattern_size in pattern_sizes_to_train:
 								# Print approximately every 1% of candles to reduce console I/O overhead
 								total_candles = len(price_list)
 								current_candle = len(price_list2)
-								print_interval = max(1, total_candles // 100)  # 1% intervals, minimum 1
+								print_interval = max(1, total_candles // PERCENT_MULTIPLIER)  # 1% intervals, minimum 1
 							
 								# Print if this is a new milestone we haven't printed yet
 								if current_candle != last_printed_candle and (current_candle % print_interval == 0 or current_candle == total_candles):
@@ -2057,11 +2130,11 @@ for current_pattern_size in pattern_sizes_to_train:
 										# Threshold = 2×SE (95% confidence interval) to filter statistical noise
 										sample_count = len(upordown4)
 										if sample_count > 0:
-											p = accuracy / 100  # Convert to proportion (0-1)
-											standard_error = math.sqrt(p * (1 - p) / sample_count) * 100  # Back to percentage points
+											p = accuracy / PERCENT_MULTIPLIER  # Convert to proportion (0-1)
+											standard_error = math.sqrt(p * (1 - p) / sample_count) * PERCENT_MULTIPLIER  # Back to percentage points
 											adaptive_threshold = 2.0 * standard_error  # 95% CI
 											# Clamp between 0.05 and 0.5 to prevent extremes
-											adaptive_threshold = max(0.05, min(0.5, adaptive_threshold))
+											adaptive_threshold = max(ADAPTIVE_THRESHOLD_MIN, min(ADAPTIVE_THRESHOLD_MAX, adaptive_threshold))
 										else:
 											adaptive_threshold = 0.5  # Default for no data
 									
@@ -2085,7 +2158,7 @@ for current_pattern_size in pattern_sizes_to_train:
 								
 									# Print signal accuracy if we have data
 									if len(upordown_signal) > 0:
-										sig_accuracy = (sum(upordown_signal)/len(upordown_signal))*100
+										sig_accuracy = (sum(upordown_signal)/len(upordown_signal))*PERCENT_MULTIPLIER
 										sig_formatted = format(sig_accuracy, '.2f').rstrip('0').rstrip('.')
 										sig_count = len(upordown_signal)
 										sig_count_formatted = f'{sig_count:,}'
@@ -2104,10 +2177,13 @@ for current_pattern_size in pattern_sizes_to_train:
 										else:
 											sig_trend_arrow = "[=]"  # No significant change
 									
-										print(f'Signal Accuracy: {sig_trend_arrow} {sig_formatted}% ({sig_count_formatted} signals triggered)')
+										print(f'Signal Accuracy: {sig_trend_arrow} {sig_formatted}% ({sig_count_formatted} predictions)')
 									
 										# Update last printed signal accuracy for next comparison
 										last_printed_signal_accuracy = sig_accuracy
+									else:
+										# No predictions exceeded baseline threshold
+										print(f'Signal Accuracy: [~] No significant predictions (all < baseline)')
 							except:
 								PrintException()
 						else:
@@ -2117,7 +2193,7 @@ for current_pattern_size in pattern_sizes_to_train:
 						# This ensures both timeframe and bounce accuracy prints happen together at milestones
 						total_candles = len(price_list)
 						current_candle = len(price_list2)
-						print_interval = max(1, total_candles // 100)
+						print_interval = max(1, total_candles // PERCENT_MULTIPLIER)
 						if current_candle != last_printed_candle and (current_candle == 1 or current_candle % print_interval == 0 or current_candle == total_candles):
 							last_printed_candle = current_candle
 					
@@ -2134,15 +2210,15 @@ for current_pattern_size in pattern_sizes_to_train:
 							last_perfect_diffs = perfect_diffs
 							# Protect against division by zero
 							if abs(new_y[0]) > 0:
-								percent_difference_of_now = ((new_y[1]-new_y[0])/abs(new_y[0]))*100
+								percent_difference_of_now = ((new_y[1]-new_y[0])/abs(new_y[0]))*PERCENT_MULTIPLIER
 							else:
 								percent_difference_of_now = 0.0
 							if abs(high_new_y[0]) > 0:
-								high_percent_difference_of_now = ((high_new_y[1]-high_new_y[0])/abs(high_new_y[0]))*100
+								high_percent_difference_of_now = ((high_new_y[1]-high_new_y[0])/abs(high_new_y[0]))*PERCENT_MULTIPLIER
 							else:
 								high_percent_difference_of_now = 0.0
 							if abs(low_new_y[0]) > 0:
-								low_percent_difference_of_now = ((low_new_y[1]-low_new_y[0])/abs(low_new_y[0]))*100
+								low_percent_difference_of_now = ((low_new_y[1]-low_new_y[0])/abs(low_new_y[0]))*PERCENT_MULTIPLIER
 							else:
 								low_percent_difference_of_now = 0.0
 							high_baseline_price_change_pct = high_percent_difference_of_now
@@ -2154,6 +2230,16 @@ for current_pattern_size in pattern_sizes_to_train:
 								low_percent_difference_of_now = new1
 							else:
 								pass
+							
+							# Store prediction for future validation (backward-looking check)
+							current_candle_idx = len(price_list2) - 1
+							prediction_queue.append({
+								'candle_idx': current_candle_idx,
+								'high_pred': high_baseline_price_change_pct,
+								'low_pred': low_baseline_price_change_pct,
+								'pattern_len': current_pattern_length,
+								'start_price': new_y[0]
+							})
 						except:
 							PrintException()
 						last_actual = new_y[0]
@@ -2202,6 +2288,12 @@ for current_pattern_size in pattern_sizes_to_train:
 															mean_weight = statistics.mean(valid_weights)
 															stdev_weight = statistics.stdev(valid_weights)
 															pruning_threshold = mean_weight - (pruning_sigma_level * stdev_weight)
+															
+															# Apply floor to pruning threshold: always prune patterns below PRUNING_WEIGHT_FLOOR
+															# Ensures very weak patterns removed even if sigma calculation would be more lenient
+															# Patterns above floor can still be pruned if sigma or age-based criteria say so
+															if pruning_threshold < PRUNING_WEIGHT_FLOOR:
+																pruning_threshold = PRUNING_WEIGHT_FLOOR
 														
 															# Validate that the threshold is a valid number
 															if not isinstance(pruning_threshold, (int, float)) or pruning_threshold != pruning_threshold:  # NaN check
@@ -2475,17 +2567,17 @@ for current_pattern_size in pattern_sizes_to_train:
 												debug_print(f"[DEBUG] TRAINER: Starting weight update loop - all_current_patterns has {len(all_current_patterns)} patterns, all_predictions has {len(all_predictions)} predictions")
 												# Protect against division by zero
 												if abs(new_y[1]) > 0:
-													this_differ = ((price2-new_y[1])/abs(new_y[1]))*100
-													high_this_differ = ((high_price2-new_y[1])/abs(new_y[1]))*100
-													low_this_differ = ((low_price2-new_y[1])/abs(new_y[1]))*100
+													this_differ = ((price2-new_y[1])/abs(new_y[1]))*PERCENT_MULTIPLIER
+													high_this_differ = ((high_price2-new_y[1])/abs(new_y[1]))*PERCENT_MULTIPLIER
+													low_this_differ = ((low_price2-new_y[1])/abs(new_y[1]))*PERCENT_MULTIPLIER
 												else:
 													this_differ = 0.0
 													high_this_differ = 0.0
 													low_this_differ = 0.0
 												if abs(new_y[0]) > 0:
-													this_diff = ((price2-new_y[0])/abs(new_y[0]))*100
-													high_this_diff = ((high_price2-new_y[0])/abs(new_y[0]))*100
-													low_this_diff = ((low_price2-new_y[0])/abs(new_y[0]))*100
+													this_diff = ((price2-new_y[0])/abs(new_y[0]))*PERCENT_MULTIPLIER
+													high_this_diff = ((high_price2-new_y[0])/abs(new_y[0]))*PERCENT_MULTIPLIER
+													low_this_diff = ((low_price2-new_y[0])/abs(new_y[0]))*PERCENT_MULTIPLIER
 												else:
 													this_diff = 0.0
 													high_this_diff = 0.0
@@ -2500,10 +2592,10 @@ for current_pattern_size in pattern_sizes_to_train:
 													low_current_prediction_price = low_all_predictions[highlowind][which_candle_of_the_prediction_index]
 													# Protect against division by zero
 													if abs(new_y[0]) > 0:
-														perc_diff_now = ((current_prediction_price-new_y[0])/abs(new_y[0]))*100
-														perc_diff_now_actual = ((price2-new_y[0])/abs(new_y[0]))*100
-														high_perc_diff_now_actual = ((high_price2-new_y[0])/abs(new_y[0]))*100
-														low_perc_diff_now_actual = ((low_price2-new_y[0])/abs(new_y[0]))*100
+														perc_diff_now = ((current_prediction_price-new_y[0])/abs(new_y[0]))*PERCENT_MULTIPLIER
+														perc_diff_now_actual = ((price2-new_y[0])/abs(new_y[0]))*PERCENT_MULTIPLIER
+														high_perc_diff_now_actual = ((high_price2-new_y[0])/abs(new_y[0]))*PERCENT_MULTIPLIER
+														low_perc_diff_now_actual = ((low_price2-new_y[0])/abs(new_y[0]))*PERCENT_MULTIPLIER
 													else:
 														perc_diff_now = 0.0
 														perc_diff_now_actual = 0.0
@@ -2515,7 +2607,7 @@ for current_pattern_size in pattern_sizes_to_train:
 														# Both prediction and actual price are zero - treat as max difference
 														difference = 100.0
 													else:
-														difference = abs((abs(current_prediction_price - float(price2)) / avg_pred_price) * 100)
+														difference = abs((abs(current_prediction_price - float(price2)) / avg_pred_price) * PERCENT_MULTIPLIER)
 													try:
 														try:
 															indy = 0
@@ -2539,9 +2631,9 @@ for current_pattern_size in pattern_sizes_to_train:
 																		break
 																
 																	new_memory = 'no'
-																	predicted_move_pct = (moves[indy]*100)
-																	high_predicted_move_pct = (high_moves[indy]*100)
-																	low_predicted_move_pct = (low_moves[indy]*100)
+																	predicted_move_pct = (moves[indy]*PERCENT_MULTIPLIER)
+																	high_predicted_move_pct = (high_moves[indy]*PERCENT_MULTIPLIER)
+																	low_predicted_move_pct = (low_moves[indy]*PERCENT_MULTIPLIER)
 																
 																	# Update EWMA volatility with actual move for adaptive thresholds
 																	_vol_cache = _volatility_cache.get(cache_key, {})
@@ -2558,9 +2650,9 @@ for current_pattern_size in pattern_sizes_to_train:
 																	# Low vol → tight threshold, high vol → loose threshold
 																	# High weight → strict threshold (must maintain performance), low weight → lenient (allow learning)
 																	volatility_factor = 1.0 + (ewma_vol / avg_vol)
-																	weight_factor_high = 2.0 / max(0.5, float(high_move_weights[indy]))
-																	weight_factor_low = 2.0 / max(0.5, float(low_move_weights[indy]))
-																	weight_factor_main = 2.0 / max(0.5, float(move_weights[indy]))
+																	weight_factor_high = WEIGHT_FACTOR_MULTIPLIER / max(WEIGHT_FACTOR_MIN, float(high_move_weights[indy]))
+																	weight_factor_low = WEIGHT_FACTOR_MULTIPLIER / max(WEIGHT_FACTOR_MIN, float(low_move_weights[indy]))
+																	weight_factor_main = WEIGHT_FACTOR_MULTIPLIER / max(WEIGHT_FACTOR_MIN, float(move_weights[indy]))
 																
 																	high_predicted_move_pct_threshold = weight_threshold_base * abs(high_predicted_move_pct) * volatility_factor * weight_factor_high
 																	high_predicted_move_pct_threshold = max(weight_threshold_min * abs(high_predicted_move_pct),
@@ -2588,27 +2680,27 @@ for current_pattern_size in pattern_sizes_to_train:
 																	# Calculate normalized error magnitude for each weight type
 																	# Step size scales with error: large errors → faster corrections, small errors → gentler adjustments
 																	high_error = high_perc_diff_now_actual - high_predicted_move_pct
-																	high_error_magnitude = abs(high_error) / max(0.1, abs(high_predicted_move_pct))
+																	high_error_magnitude = abs(high_error) / max(ERROR_MAGNITUDE_MIN, abs(high_predicted_move_pct))
 																	high_adaptive_step = weight_base_step * min(weight_step_cap, high_error_magnitude)
 																
 																	low_error = low_perc_diff_now_actual - low_predicted_move_pct
-																	low_error_magnitude = abs(low_error) / max(0.1, abs(low_predicted_move_pct))
+																	low_error_magnitude = abs(low_error) / max(ERROR_MAGNITUDE_MIN, abs(low_predicted_move_pct))
 																	low_adaptive_step = weight_base_step * min(weight_step_cap, low_error_magnitude)
 																
 																	main_error = perc_diff_now_actual - predicted_move_pct
-																	main_error_magnitude = abs(main_error) / max(0.1, abs(predicted_move_pct))
+																	main_error_magnitude = abs(main_error) / max(ERROR_MAGNITUDE_MIN, abs(predicted_move_pct))
 																	main_adaptive_step = weight_base_step * min(weight_step_cap, main_error_magnitude)
 																
 																	if high_perc_diff_now_actual > high_predicted_move_pct + high_predicted_move_pct_threshold:
 																		high_new_weight = high_move_weights[indy] + high_adaptive_step
-																		if high_new_weight > 2.0:
-																			high_new_weight = 2.0
+																		if high_new_weight > WEIGHT_MAX:
+																			high_new_weight = WEIGHT_MAX
 																		# Apply decay when pattern needs correction (not perfect)
 																		high_new_weight = high_new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																	elif high_perc_diff_now_actual < high_predicted_move_pct - high_predicted_move_pct_threshold:
 																		high_new_weight = high_move_weights[indy] - high_adaptive_step
-																		if high_new_weight < 0.0:
-																			high_new_weight = 0.0
+																		if high_new_weight < WEIGHT_MIN:
+																			high_new_weight = WEIGHT_MIN
 																		# Apply decay when pattern needs correction (not perfect)
 																		high_new_weight = high_new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																	else:
@@ -2616,14 +2708,14 @@ for current_pattern_size in pattern_sizes_to_train:
 																		high_new_weight = high_move_weights[indy]
 																	if low_perc_diff_now_actual < low_predicted_move_pct - low_predicted_move_pct_threshold:
 																		low_new_weight = low_move_weights[indy] + low_adaptive_step
-																		if low_new_weight > 2.0:
-																			low_new_weight = 2.0
+																		if low_new_weight > WEIGHT_MAX:
+																			low_new_weight = WEIGHT_MAX
 																		# Apply decay when pattern needs correction (not perfect)
 																		low_new_weight = low_new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																	elif low_perc_diff_now_actual > low_predicted_move_pct + low_predicted_move_pct_threshold:
 																		low_new_weight = low_move_weights[indy] - low_adaptive_step
-																		if low_new_weight < 0.0:
-																			low_new_weight = 0.0
+																		if low_new_weight < WEIGHT_MIN:
+																			low_new_weight = WEIGHT_MIN
 																		# Apply decay when pattern needs correction (not perfect)
 																		low_new_weight = low_new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																	else:
@@ -2631,14 +2723,14 @@ for current_pattern_size in pattern_sizes_to_train:
 																		low_new_weight = low_move_weights[indy]
 																	if perc_diff_now_actual > predicted_move_pct + predicted_move_pct_threshold:
 																		new_weight = move_weights[indy] + main_adaptive_step
-																		if new_weight > 2.0:
-																			new_weight = 2.0
+																		if new_weight > WEIGHT_MAX:
+																			new_weight = WEIGHT_MAX
 																		# Apply decay when pattern needs correction (not perfect)
 																		new_weight = new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																	elif perc_diff_now_actual < predicted_move_pct - predicted_move_pct_threshold:
 																		new_weight = move_weights[indy] - main_adaptive_step
-																		if new_weight < 0.0:
-																			new_weight = 0.0
+																		if new_weight < WEIGHT_MIN:
+																			new_weight = WEIGHT_MIN
 																		# Apply decay when pattern needs correction (not perfect)
 																		new_weight = new_weight * (1 - weight_decay_rate) + weight_decay_target * weight_decay_rate
 																	else:
@@ -2678,8 +2770,8 @@ for current_pattern_size in pattern_sizes_to_train:
 															# new_pattern is already percentage changes - use directly without conversion
 															# Pattern format: [pct_change1, pct_change2, ..., prediction_pct_change]
 															mem_entry = '|'.join([str(x) for x in new_pattern])+'{}'+str(high_this_diff)+'{}'+str(low_this_diff)
-														# Inline duplicate check after 500 patterns to prevent memory bloat during training
-														# Final deduplication at save time ensures optimal count for each pattern size
+														# Inline duplicate check to prevent memory bloat and preserve weight accuracy
+														# Always check duplicates to ensure weights are correctly maintained
 														skip_pattern = False
 														skip_reason = ""
 													
@@ -2689,7 +2781,7 @@ for current_pattern_size in pattern_sizes_to_train:
 														elif not is_valid_pattern(mem_entry):
 															skip_pattern = True
 															skip_reason = "invalid"
-														elif len(_mem['memory_list']) > 500 and mem_entry in _mem['memory_list']:
+														elif mem_entry in _mem['memory_list']:
 															skip_pattern = True
 															skip_reason = "duplicate"
 													
@@ -2838,13 +2930,13 @@ def _verify_training_artifacts(coin: str, tf_choices: list, pattern_sizes: list)
 					else:
 						# Count patterns (separated by ~)
 						pattern_count = content.count('~')
-						if pattern_count < 100:
-							warnings.append(f"Few patterns in {mem_file}: {pattern_count} (expected >100)")
+						if pattern_count < 52:
+							warnings.append(f"Few patterns in {mem_file}: {pattern_count} (expected >52)")
 			except Exception as e:
 				errors.append(f"Cannot read memory file {mem_file}: {e}")
 			
 			# Check weight files (3 types per timeframe/size)
-			for weight_type in ["weights", "high_weights", "low_weights"]:
+			for weight_type in ["memory_weights", "memory_weights_high", "memory_weights_low"]:
 				weight_file = f"{weight_type}_{prefix}.dat"
 				if not os.path.isfile(weight_file):
 					errors.append(f"Missing weight file: {weight_file}")
@@ -2855,7 +2947,7 @@ def _verify_training_artifacts(coin: str, tf_choices: list, pattern_sizes: list)
 						errors.append(f"Weight file too small: {weight_file} ({w_size} bytes)")
 			
 			# Check threshold file
-			threshold_file = f"threshold_{prefix}.dat"
+			threshold_file = f"neural_perfect_threshold_{prefix}.dat"
 			if not os.path.isfile(threshold_file):
 				errors.append(f"Missing threshold file: {threshold_file}")
 			else:

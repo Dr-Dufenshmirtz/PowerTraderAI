@@ -51,7 +51,7 @@ Notes on AI behavior and trading rules (informational only):
 	Uses relative threshold matching (percentage of pattern magnitude) for
 	consistent behavior across different price levels and market conditions.
 	Thresholds are volatility-based (5.0× average volatility) and use a
-	volatility-adaptive baseline (0.05× volatility, typically ~0.1%) for
+	volatility-adaptive baseline (0.1× volatility, typically ~0.4%) for
 	near-zero patterns. Kernel weighting uses exponential distance penalty
 	(e^(-diff/threshold)) scaled by threshold enforcement setting.
 
@@ -102,17 +102,30 @@ from nacl.signing import SigningKey
 # instantiate KuCoin market client (kept at top-level like original)
 market = Market(url='https://api.kucoin.com')
 
-# Thinker algorithm constants
-DEFAULT_VOLATILITY = 2.0  # Default volatility fallback (typical crypto volatility %)
+# ============================================================================
+# THINKER ALGORITHM CONSTANTS
+# ============================================================================
+
+# Volatility and default values
+DEFAULT_VOLATILITY = 4.0  # Default volatility fallback (typical crypto high-low range %)
+DEFAULT_DISTANCE = 0.5  # Default distance value for calculations
+
+# Trading thresholds and margins
 MIN_PROFIT_MARGIN = 0.25  # Minimum profit margin % for trades (also used as default/fallback)
 GAP_ENFORCEMENT_MIN = 0.25  # Minimum gap % between neural levels
 GAP_INCREMENT = 0.25  # Gap modifier increment % when enforcing level separation
-KUCOIN_API_RATE_LIMIT = 0.15  # Seconds between KuCoin API calls (150ms, ~6.7 req/s)
-ROBINHOOD_API_RATE_LIMIT = 0.5  # Seconds between Robinhood API calls
-DEFAULT_DISTANCE = 0.5  # Default distance value for calculations
+
+# Pattern matching parameters
 BASE_MAX_CUTOFF_MULTIPLIER = 1.25  # Base multiplier for pattern exclusion (× threshold × enforcement)
 BASE_PERFECT_MATCH_MULTIPLIER = 1.0  # Base multiplier for fallback trigger (× threshold × enforcement)
 BASE_KERNEL_BANDWIDTH = 2.5  # Base kernel bandwidth in threshold-widths (× enforcement, lower = stronger distance penalty)
+
+# API rate limiting
+KUCOIN_API_RATE_LIMIT = 0.15  # Seconds between KuCoin API calls (150ms, ~6.7 req/s)
+ROBINHOOD_API_RATE_LIMIT = 0.5  # Seconds between Robinhood API calls
+
+# Percentage conversion
+PERCENT_MULTIPLIER = 100  # Multiplier to convert decimal to percentage
 
 # Windows DPAPI decryption
 def _decrypt_with_dpapi(encrypted_data: bytes) -> str:
@@ -1235,7 +1248,7 @@ try:
 		training_settings = json.load(f)
 		PATTERN_SIZE = training_settings["pattern_size"]
 		ENABLE_PATTERN_FALLBACK = training_settings.get("enable_pattern_fallback", True)
-		min_threshold = training_settings.get("min_threshold", 10.0)
+		min_threshold = training_settings.get("min_threshold", 5.0)
 		max_threshold = training_settings.get("max_threshold", 25.0)
 		DEFAULT_THRESHOLD_FALLBACK = (min_threshold + max_threshold) / 2.0  # Midpoint of user's threshold range
 		
@@ -1988,8 +2001,8 @@ def step_coin(sym: str):
 							# Relative difference as percentage of pattern value
 							# Use volatility-adaptive baseline (scaled by market conditions)
 							# Scales noise floor with market: high volatility → higher baseline, low volatility → tighter baseline
-							baseline = max(abs(memory_val), 0.05 * volatility)
-							diff = (abs(current_val - memory_val) / baseline) * 100
+							baseline = max(abs(memory_val), 0.1 * volatility)
+							diff = (abs(current_val - memory_val) / baseline) * PERCENT_MULTIPLIER
 							total_diff += diff
 							valid_comparisons += 1
 						except Exception:
@@ -2006,8 +2019,8 @@ def step_coin(sym: str):
 					# Parse high_diff and low_diff for all patterns (needed for later use)
 					# Use pre-validated parts from split (already verified len >= 3)
 					try:
-						high_diff = float(_clean_training_string(parts[1])) / 100
-						low_diff = float(_clean_training_string(parts[2])) / 100
+						high_diff = float(_clean_training_string(parts[1])) / PERCENT_MULTIPLIER
+						low_diff = float(_clean_training_string(parts[2])) / PERCENT_MULTIPLIER
 					except (ValueError, IndexError) as e:
 						# Failed to parse high/low diffs - skip this pattern
 						debug_print(f"[DEBUG] {sym}: Failed to parse high/low diffs at index {mem_ind}: {e}")
@@ -2170,7 +2183,7 @@ def step_coin(sym: str):
 		last_close = _safe_float_convert(last_candle_data[2], "last_candle.close", 0.0)
 		
 		try:
-			c_diff = final_moves / 100
+			c_diff = final_moves / PERCENT_MULTIPLIER
 			high_diff = high_final_moves
 			low_diff = low_final_moves
 
@@ -2178,6 +2191,13 @@ def step_coin(sym: str):
 			start_price = last_close
 			high_new_price = start_price + (start_price * high_diff)
 			low_new_price = start_price + (start_price * low_diff)
+			
+			debug_print(
+				f"[DEBUG] {sym} {tf_choices[tf_choice_index]}: "
+				f"start_price={start_price:.2f}, final_moves={final_moves:.2f}%, "
+				f"high_diff={high_diff:.4f} ({high_diff*PERCENT_MULTIPLIER:.2f}%), low_diff={low_diff:.4f} ({low_diff*PERCENT_MULTIPLIER:.2f}%) | "
+				f"high_new_price={high_new_price:.2f}, low_new_price={low_new_price:.2f}"
+			)
 		except Exception:
 			start_price = last_close
 			high_new_price = start_price
@@ -2198,12 +2218,25 @@ def step_coin(sym: str):
 			future_timestamp = datetime.now() + timedelta(seconds=tf_seconds)
 			
 			# Build prediction candle: open=current close, high/low from predictions, close from final_moves
-			pred_close = start_price * (1 + (final_moves / 100))
+			pred_close = start_price * (1 + (final_moves / PERCENT_MULTIPLIER))
+			
+			# Ensure high/low properly encompass open and close (valid candle structure)
+			pred_high = max(start_price, pred_close, high_tf_prices[tf_choice_index])
+			pred_low = min(start_price, pred_close, low_tf_prices[tf_choice_index])
+			
+			# Debug output to verify prediction candle values
+			debug_print(
+				f"[DEBUG] {sym} {current_tf} Prediction Candle: "
+				f"open={start_price:.2f}, close={pred_close:.2f}, "
+				f"high={pred_high:.2f}, low={pred_low:.2f} | "
+				f"final_moves={final_moves:.2f}%, high_final_moves={high_final_moves:.4f}, low_final_moves={low_final_moves:.4f}"
+			)
+			
 			prediction_candles[current_tf] = {
 				'timestamp': future_timestamp.isoformat(),
 				'open': round(start_price, 2),
-				'high': round(high_tf_prices[tf_choice_index], 2),
-				'low': round(low_tf_prices[tf_choice_index], 2),
+				'high': round(pred_high, 2),
+				'low': round(pred_low, 2),
 				'close': round(pred_close, 2)
 			}
 
@@ -2309,10 +2342,10 @@ def step_coin(sym: str):
 				# (original comparisons)
 				if current > high_bound_prices[inder] and high_tf_prices[inder] != low_tf_prices[inder]:
 					size_info = f" [size {pattern_sizes_used[inder]}]" if pattern_sizes_used[inder] > 0 else ""
-					message = 'SHORT on ' + tf_choices[inder] + ' timeframe' + size_info + '.\t' + format(((high_bound_prices[inder] - current) / abs(current)) * 100, '.8f') + '\tHigh: ' + str(high_bound_prices[inder])
+					message = 'SHORT on ' + tf_choices[inder] + ' timeframe' + size_info + '.\t' + format(((high_bound_prices[inder] - current) / abs(current)) * PERCENT_MULTIPLIER, '.8f') + '\tHigh: ' + str(high_bound_prices[inder])
 					if messaged[inder] != 'yes':
 						messaged[inder] = 'yes'
-					margins[inder] = ((high_tf_prices[inder] - current) / abs(current)) * 100
+					margins[inder] = ((high_tf_prices[inder] - current) / abs(current)) * PERCENT_MULTIPLIER
 
 					# Compare with old message to detect changes
 					if 'SHORT' in old_message:
@@ -2326,11 +2359,11 @@ def step_coin(sym: str):
 
 				elif current < low_bound_prices[inder] and high_tf_prices[inder] != low_tf_prices[inder]:
 					size_info = f" [size {pattern_sizes_used[inder]}]" if pattern_sizes_used[inder] > 0 else ""
-					message = 'LONG on ' + tf_choices[inder] + ' timeframe' + size_info + '.\t' + format(((low_bound_prices[inder] - current) / abs(current)) * 100, '.8f') + '\tLow: ' + str(low_bound_prices[inder])
+					message = 'LONG on ' + tf_choices[inder] + ' timeframe' + size_info + '.\t' + format(((low_bound_prices[inder] - current) / abs(current)) * PERCENT_MULTIPLIER, '.8f') + '\tLow: ' + str(low_bound_prices[inder])
 					if messaged[inder] != 'yes':
 						messaged[inder] = 'yes'
 
-					margins[inder] = ((low_tf_prices[inder] - current) / abs(current)) * 100
+					margins[inder] = ((low_tf_prices[inder] - current) / abs(current)) * PERCENT_MULTIPLIER
 
 					tf_sides[inder] = 'long'
 
@@ -2375,8 +2408,8 @@ def step_coin(sym: str):
 			while True:
 				pred_low_val = low_tf_prices[price_list_index]
 				pred_high_val = high_tf_prices[price_list_index]
-				new_low_price = pred_low_val - (pred_low_val * (distance / 100))
-				new_high_price = pred_high_val + (pred_high_val * (distance / 100))
+				new_low_price = pred_low_val - (pred_low_val * (distance / PERCENT_MULTIPLIER))
+				new_high_price = pred_high_val + (pred_high_val * (distance / PERCENT_MULTIPLIER))
 				if perfects[price_list_index] != 'inactive':
 					low_bound_prices.append(new_low_price)
 					high_bound_prices.append(new_high_price)
@@ -2424,7 +2457,7 @@ def step_coin(sym: str):
 							low_perc_diff = 0.0
 						else:
 							try:
-								low_perc_diff = (abs(new_low_bound_prices[og_index] - new_low_bound_prices[og_index + 1]) / low_avg) * 100
+								low_perc_diff = (abs(new_low_bound_prices[og_index] - new_low_bound_prices[og_index + 1]) / low_avg) * PERCENT_MULTIPLIER
 							except Exception:
 								low_perc_diff = 0.0
 						
@@ -2433,7 +2466,7 @@ def step_coin(sym: str):
 							high_perc_diff = 0.0
 						else:
 							try:
-								high_perc_diff = (abs(new_high_bound_prices[og_index] - new_high_bound_prices[og_index + 1]) / high_avg) * 100
+								high_perc_diff = (abs(new_high_bound_prices[og_index] - new_high_bound_prices[og_index + 1]) / high_avg) * PERCENT_MULTIPLIER
 							except Exception:
 								high_perc_diff = 0.0
 
@@ -2602,14 +2635,14 @@ def step_coin(sym: str):
 					high_bound = high_bound_prices[i]
 						
 					if low_bound != 0.0 and high_bound != float('inf'):
-						low_dist = ((current - low_bound) / current) * 100
-						high_dist = ((high_bound - current) / current) * 100
+						low_dist = ((current - low_bound) / current) * PERCENT_MULTIPLIER
+						high_dist = ((high_bound - current) / current) * PERCENT_MULTIPLIER
 						bounds_text = f"Low:{low_dist:+5.1f}%   High:{high_dist:+5.1f}%"
 					elif low_bound != 0.0:
-						low_dist = ((current - low_bound) / current) * 100
+						low_dist = ((current - low_bound) / current) * PERCENT_MULTIPLIER
 						bounds_text = f"Low:{low_dist:+5.1f}%   High:    --"
 					elif high_bound != float('inf'):
-						high_dist = ((high_bound - current) / current) * 100
+						high_dist = ((high_bound - current) / current) * PERCENT_MULTIPLIER
 						bounds_text = f"Low: ------   High:{high_dist:+5.1f}%"
 					else:
 						bounds_text = "No boundaries"
@@ -2645,7 +2678,7 @@ def step_coin(sym: str):
 					# Sort descending (highest to lowest), take the Nth one
 					valid_lows.sort(reverse=True)
 					long_trigger_price = valid_lows[long_signal_min - 1]
-					next_long_pct = ((long_trigger_price - current) / current) * 100
+					next_long_pct = ((long_trigger_price - current) / current) * PERCENT_MULTIPLIER
 				else:
 					next_long_pct = None
 					
@@ -2656,7 +2689,7 @@ def step_coin(sym: str):
 					# Sort ascending (lowest to highest), take the Nth one
 					valid_highs.sort()
 					short_trigger_price = valid_highs[long_signal_min - 1]
-					next_short_pct = ((short_trigger_price - current) / current) * 100
+					next_short_pct = ((short_trigger_price - current) / current) * PERCENT_MULTIPLIER
 				else:
 					next_short_pct = None
 				

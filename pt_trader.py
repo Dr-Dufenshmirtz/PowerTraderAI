@@ -27,6 +27,10 @@ Key behavioral notes (informational only):
     Start trades when long_signal >= entry_signals.long_signal_min (default 4)
     AND short_signal <= entry_signals.short_signal_max (default 0).
     Blocked for liquidation coins (sell-only).
+    
+    When multiple coins qualify simultaneously, opportunity scoring determines buy
+    priority: coins are scored by long_signal strength (higher = better), and the
+    highest-scoring coin is selected. Ties are broken by original coin list order.
 
 - Exit signal (MTF confirmation):
     Trailing profit margin triggers sell when price crosses below trailing line,
@@ -96,11 +100,22 @@ from cryptography.hazmat.primitives import serialization
 HUB_DATA_DIR = os.environ.get("POWERTRADER_HUB_DIR", os.path.join(os.path.dirname(__file__), "hub_data"))
 os.makedirs(HUB_DATA_DIR, exist_ok=True)
 
-# Trading algorithm constants
+# ============================================================================
+# TRADER ALGORITHM CONSTANTS
+# ============================================================================
+
+# Profit margin and DCA settings
 DEFAULT_TRAILING_GAP_PCT = 0.5  # Trailing profit margin gap percentage
 DEFAULT_DCA_WINDOW_HOURS = 24  # Rolling DCA window in hours
+
+# Position sizing
 DEFAULT_MIN_ALLOCATION_USD = 0.5  # Minimum allocation in USD per coin
+
+# Timing and execution
 DEFAULT_MAIN_LOOP_DELAY = 0.5  # Main loop delay in seconds
+
+# Percentage conversion
+PERCENT_MULTIPLIER = 100  # Multiplier to convert decimal to percentage
 
 # Debug mode support - reads from gui_settings.json to enable verbose logging
 _GUI_SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "gui_settings.json")
@@ -1778,7 +1793,7 @@ class CryptoAPITrading:
                     # Recalculate PnL% using actual fill price if available
                     actual_pnl_pct = pnl_pct
                     if actual_price is not None and avg_cost_basis is not None and avg_cost_basis > 0:
-                        actual_pnl_pct = ((actual_price - avg_cost_basis) / avg_cost_basis) * 100.0
+                        actual_pnl_pct = ((actual_price - avg_cost_basis) / avg_cost_basis) * PERCENT_MULTIPLIER
                     
                     self._record_trade(
                         side="buy",
@@ -1901,7 +1916,7 @@ class CryptoAPITrading:
             # Recalculate PnL% using actual fill price if available
             actual_pnl_pct = pnl_pct
             if actual_price is not None and avg_cost_basis is not None and avg_cost_basis > 0:
-                actual_pnl_pct = ((actual_price - avg_cost_basis) / avg_cost_basis) * 100.0
+                actual_pnl_pct = ((actual_price - avg_cost_basis) / avg_cost_basis) * PERCENT_MULTIPLIER
             
             self._record_trade(
                 side="sell",
@@ -2046,7 +2061,7 @@ class CryptoAPITrading:
                 continue
 
         total_account_value = buying_power + holdings_sell_value
-        in_use = (holdings_sell_value / total_account_value) * 100 if total_account_value > 0 else 0.0
+        in_use = (holdings_sell_value / total_account_value) * PERCENT_MULTIPLIER if total_account_value > 0 else 0.0
 
         # If this tick is incomplete, fall back to last known-good snapshot so the GUI chart never gets a bogus dip.
         if (not snapshot_ok) or (total_account_value <= 0.0):
@@ -2120,8 +2135,8 @@ class CryptoAPITrading:
                 continue  # Skip all trading logic for this symbol
 
             if avg_cost_basis > 0:
-                gain_loss_percentage_buy = ((current_buy_price - avg_cost_basis) / avg_cost_basis) * 100
-                gain_loss_percentage_sell = ((current_sell_price - avg_cost_basis) / avg_cost_basis) * 100
+                gain_loss_percentage_buy = ((current_buy_price - avg_cost_basis) / avg_cost_basis) * PERCENT_MULTIPLIER
+                gain_loss_percentage_sell = ((current_sell_price - avg_cost_basis) / avg_cost_basis) * PERCENT_MULTIPLIER
             else:
                 gain_loss_percentage_buy = 0
                 gain_loss_percentage_sell = 0
@@ -2149,7 +2164,7 @@ class CryptoAPITrading:
                 if blue_lines and neural_next <= len(blue_lines):
                     target_price = blue_lines[neural_next - 1]  # neural_next-1 for 0-based indexing
                     distance = current_buy_price - target_price
-                    distance_pct = (distance / current_buy_price) * 100 if current_buy_price > 0 else 0
+                    distance_pct = (distance / current_buy_price) * PERCENT_MULTIPLIER if current_buy_price > 0 else 0
                     neural_distance_info = f" ({self._fmt_price(target_price)}, ${distance:.2f} / {distance_pct:.2f}% away)"
                 next_dca_display = f"{hard_next:.2f}% / N{neural_next}{neural_distance_info}"
             else:
@@ -2164,7 +2179,7 @@ class CryptoAPITrading:
 
             if avg_cost_basis > 0:
                 # Hardcoded trigger line price
-                hard_line_price = avg_cost_basis * (1.0 + (hard_next / 100.0))
+                hard_line_price = avg_cost_basis * (1.0 + (hard_next / PERCENT_MULTIPLIER))
                 dca_line_price = hard_line_price
 
                 # Neural DCA: read actual price levels and use whichever is higher (triggers first as price drops)
@@ -2187,7 +2202,7 @@ class CryptoAPITrading:
                             # Neural price is wildly off - ignore it and fall back to hardcoded
                             debug_print(
                                 f"[DEBUG] TRADER: Rejecting neural DCA level N{neural_level_needed_disp} for {symbol}. "
-                                f"Price ${neural_line_price:.2f} deviates {price_deviation*100:.1f}% from current ${current_buy_price:.2f} (max 15%)"
+                                f"Price ${neural_line_price:.2f} deviates {price_deviation*PERCENT_MULTIPLIER:.1f}% from current ${current_buy_price:.2f} (max 15%)"
                             )
                             neural_line_price = 0.0
 
@@ -2237,7 +2252,7 @@ class CryptoAPITrading:
 
             if avg_cost_basis > 0:
                 pm_start_pct_disp = self.pm_start_pct_no_dca if int(triggered_levels) == 0 else self.pm_start_pct_with_dca
-                base_pm_line_disp = avg_cost_basis * (1.0 + (pm_start_pct_disp / 100.0))
+                base_pm_line_disp = avg_cost_basis * (1.0 + (pm_start_pct_disp / PERCENT_MULTIPLIER))
 
                 state = self.trailing_pm.get(symbol)
                 if state is None:
@@ -2254,7 +2269,7 @@ class CryptoAPITrading:
                 trail_status = "ON" if (active_disp or above_disp) else "OFF"
 
                 if trail_line_disp > 0:
-                    dist_to_trail_pct = ((current_sell_price - trail_line_disp) / trail_line_disp) * 100.0
+                    dist_to_trail_pct = ((current_sell_price - trail_line_disp) / trail_line_disp) * PERCENT_MULTIPLIER
             
             # Write current price to hub_data folder
             try:
@@ -2337,8 +2352,8 @@ class CryptoAPITrading:
             # sell happens only when price crosses from above the trailing line to below it.
             if avg_cost_basis > 0:
                 pm_start_pct = self.pm_start_pct_no_dca if int(triggered_levels) == 0 else self.pm_start_pct_with_dca
-                base_pm_line = avg_cost_basis * (1.0 + (pm_start_pct / 100.0))
-                trail_gap = self.trailing_gap_pct / 100.0  # 0.5% => 0.005
+                base_pm_line = avg_cost_basis * (1.0 + (pm_start_pct / PERCENT_MULTIPLIER))
+                trail_gap = self.trailing_gap_pct / PERCENT_MULTIPLIER  # 0.5% => 0.005
 
                 state = self.trailing_pm.get(symbol)
                 if state is None:
@@ -2390,7 +2405,7 @@ class CryptoAPITrading:
                     # Forced sell on cross from ABOVE -> BELOW trailing line
                     if state["was_above"] and (current_sell_price < state["line"]):
                         # Final validation before sell - ensure we're actually in profit
-                        expected_pnl_pct = ((current_sell_price - avg_cost_basis) / avg_cost_basis) * 100.0 if avg_cost_basis > 0 else 0.0
+                        expected_pnl_pct = ((current_sell_price - avg_cost_basis) / avg_cost_basis) * PERCENT_MULTIPLIER if avg_cost_basis > 0 else 0.0
                         
                         if expected_pnl_pct < 0:
                             print(
@@ -2667,62 +2682,55 @@ class CryptoAPITrading:
 
         holding_full_symbols = [f"{h['asset_code']}-USD" for h in holdings.get("results", [])]
 
-        start_index = 0
-        while start_index < len(crypto_symbols):
-            base_symbol = crypto_symbols[start_index].upper().strip()
-            full_symbol = f"{base_symbol}-USD"
+        # Check max concurrent positions limit once (only count active trading coins)
+        trading_cfg = _load_trading_config()
+        max_positions = trading_cfg.get("position_sizing", {}).get("max_concurrent_positions", 3)
+        
+        active_positions = len([
+            h for h in holdings.get("results", []) 
+            if h.get("asset_code") != "USDC" 
+            and self.coin_categories.get(h.get("asset_code", ""), "active") == "active"
+        ])
+        
+        if active_positions >= max_positions:
+            debug_print(f"[DEBUG] TRADER: At max active positions ({active_positions}/{max_positions}), skipping all entry checks")
+            return
 
-            # Re-fetch holdings before each entry check to prevent double-entry race
-            # This ensures we have fresh data if a previous order completed mid-loop
-            try:
-                holdings = self.get_holdings()
-                holding_full_symbols = [f"{h['asset_code']}-USD" for h in holdings.get("results", [])]
-                debug_print(f"[DEBUG] TRADER: Refreshed holdings before checking entry for {base_symbol}")
-            except Exception as e:
-                debug_print(f"[DEBUG] TRADER: Failed to refresh holdings: {e}")
-                # Continue with existing holdings list if refresh fails
+        # Entry signal thresholds from config
+        long_min = max(1, min(7, int(trading_cfg.get("entry_signals", {}).get("long_signal_min", 4))))
+        short_max = max(0, min(7, int(trading_cfg.get("entry_signals", {}).get("short_signal_max", 0))))
+
+        # Phase 1: Score all eligible coins (preserves coin list order for stable sort)
+        eligible_coins = []
+        for index, base_symbol in enumerate(crypto_symbols):
+            base_symbol = base_symbol.upper().strip()
+            full_symbol = f"{base_symbol}-USD"
 
             # Skip if already held
             if full_symbol in holding_full_symbols:
-                start_index += 1
+                debug_print(f"[DEBUG] TRADER: Skipping {base_symbol} - already held")
                 continue
 
-            # Check max concurrent positions limit (only count active trading coins)
-            trading_cfg = _load_trading_config()
-            max_positions = trading_cfg.get("position_sizing", {}).get("max_concurrent_positions", 3)
-            
-            # Only count active trading coins in position limit (exclude accumulate & liquidate)
-            active_positions = len([
-                h for h in holdings.get("results", []) 
-                if h.get("asset_code") != "USDC" 
-                and self.coin_categories.get(h.get("asset_code", ""), "active") == "active"
-            ])
-            
-            if active_positions >= max_positions:
-                debug_print(f"[DEBUG] TRADER: Skipping {base_symbol} entry - at max active positions ({active_positions}/{max_positions})")
-                start_index += 1
+            # Check coin category - block entry for liquidation coins (sell-only)
+            coin_category = self.coin_categories.get(base_symbol, "active")
+            if coin_category == "liquidate":
+                debug_print(f"[DEBUG] TRADER: Skipping {base_symbol} - liquidation coin (sell-only)")
                 continue
 
-            # Neural signals are used as a "permission to start" gate.
+            # Read neural signals
             buy_count = self._read_long_dca_signal(base_symbol)
             sell_count = self._read_short_dca_signal(base_symbol)
 
-            # Entry signal thresholds from config
-            trading_cfg = _load_trading_config()
-            long_min = max(1, min(7, int(trading_cfg.get("entry_signals", {}).get("long_signal_min", 4))))
-            short_max = max(0, min(7, int(trading_cfg.get("entry_signals", {}).get("short_signal_max", 0))))
-            
             debug_print(
                 f"[DEBUG] TRADER: Entry gate check for {base_symbol}: "
                 f"long_signal={buy_count} (need >={long_min}), "
                 f"short_signal={sell_count} (need <={short_max})"
             )
-            
-            # Both conditions must be true to allow entry
+
+            # Check entry requirements
             entry_allowed = (buy_count >= long_min) and (sell_count <= short_max)
             
             if not entry_allowed:
-                # Entry gate failed - block buy
                 if buy_count < long_min:
                     debug_print(
                         f"[DEBUG] TRADER: Entry blocked for {base_symbol} - "
@@ -2733,20 +2741,43 @@ class CryptoAPITrading:
                         f"[DEBUG] TRADER: Entry blocked for {base_symbol} - "
                         f"excessive bearish signals ({sell_count} > {short_max})"
                     )
-                start_index += 1
                 continue
+
+            # Coin is eligible - calculate opportunity score (signal strength above threshold)
+            score = buy_count
+            eligible_coins.append((score, index, base_symbol, buy_count, sell_count))
+            debug_print(f"[DEBUG] TRADER: {base_symbol} eligible with score={score}")
+
+        # Phase 2: Sort by score (descending), with original index as tiebreaker (stable sort)
+        # Python's sort is stable, so coins with same score maintain list order
+        eligible_coins.sort(reverse=True, key=lambda x: (x[0], -x[1]))
+
+        if eligible_coins:
+            # Select best coin
+            best_score, best_index, base_symbol, buy_count, sell_count = eligible_coins[0]
+            full_symbol = f"{base_symbol}-USD"
             
-            # Check coin category - block entry for liquidation coins (sell-only)
-            coin_category = self.coin_categories.get(base_symbol, "active")
-            if coin_category == "liquidate":
-                print(f"[{base_symbol}] Entry blocked: Liquidation coin (sell-only)")
-                debug_print(f"[DEBUG] TRADER: Blocking entry for {base_symbol} - liquidation coin")
-                start_index += 1
-                continue
+            debug_print(
+                f"[DEBUG] TRADER: Best opportunity: {base_symbol} (score={best_score}, "
+                f"rank 1 of {len(eligible_coins)} eligible)"
+            )
             
+            # Re-fetch holdings before buy to prevent double-entry race
+            try:
+                holdings = self.get_holdings()
+                holding_full_symbols = [f"{h['asset_code']}-USD" for h in holdings.get("results", [])]
+                debug_print(f"[DEBUG] TRADER: Refreshed holdings before buy for {base_symbol}")
+            except Exception as e:
+                debug_print(f"[DEBUG] TRADER: Failed to refresh holdings: {e}")
+
+            # Double-check still not held (could have changed during scoring phase)
+            if full_symbol in holding_full_symbols:
+                debug_print(f"[DEBUG] TRADER: {base_symbol} now held (race condition), aborting buy")
+                return
+
             # Entry gate passed - proceed with buy
             print(
-                f"✅ [{base_symbol}] ENTRY GATE PASSED: "
+                f"✅ [{base_symbol}] BEST OPPORTUNITY (score {best_score}): "
                 f"{buy_count}/7 bullish, {sell_count}/7 bearish"
             )
             debug_print(f"[DEBUG] TRADER: Entry confirmation passed for {base_symbol}, placing initial buy order")
@@ -2775,10 +2806,8 @@ class CryptoAPITrading:
                 trading_cfg = _load_trading_config()
                 post_delay = trading_cfg.get("timing", {}).get("post_trade_delay_seconds", 30)
                 time.sleep(post_delay)
-                holdings = self.get_holdings()
-                holding_full_symbols = [f"{h['asset_code']}-USD" for h in holdings.get("results", [])]
-
-            start_index += 1
+        else:
+            debug_print("[DEBUG] TRADER: No eligible coins for entry")
 
         # Cost basis now recalculated immediately after each trade
         # Only need to reinitialize DCA levels if trades were made
