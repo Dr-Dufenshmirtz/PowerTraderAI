@@ -360,6 +360,7 @@ class NeuralSignalTile(ttk.Frame):
         super().__init__(parent)
         self.coin = coin
         self._inactive_count = 0  # Track how many timeframes are inactive
+        self._is_untrained = False  # Track if coin is not trained yet
 
         self._hover_on = False
         self._selected_on = False
@@ -502,17 +503,27 @@ class NeuralSignalTile(ttk.Frame):
                     highlightbackground=self._hover_border,
                     highlightthickness=2,
                 )
-                self.title_lbl.configure(foreground=self._hover_fg)
-                self.value_lbl.configure(foreground=self._hover_fg)
+                # If untrained, keep labels dimmed even on hover
+                if self._is_untrained:
+                    self.title_lbl.configure(foreground=DARK_MUTED)
+                    self.value_lbl.configure(foreground=DARK_MUTED)
+                else:
+                    self.title_lbl.configure(foreground=self._hover_fg)
+                    self.value_lbl.configure(foreground=self._hover_fg)
             elif self._selected_on:
-                # Selected effect: border only, text stays normal
+                # Selected effect: border only, text stays normal (or dimmed if untrained)
                 self.canvas.configure(
                     bg=self._selected_canvas_bg,
                     highlightbackground=self._selected_border,
                     highlightthickness=2,
                 )
-                self.title_lbl.configure(foreground=self._normal_fg)
-                self.value_lbl.configure(foreground=self._normal_fg)
+                # If untrained, keep labels dimmed even when selected
+                if self._is_untrained:
+                    self.title_lbl.configure(foreground=DARK_MUTED)
+                    self.value_lbl.configure(foreground=DARK_MUTED)
+                else:
+                    self.title_lbl.configure(foreground=self._normal_fg)
+                    self.value_lbl.configure(foreground=self._normal_fg)
             else:
                 # Normal state
                 self.canvas.configure(
@@ -520,8 +531,13 @@ class NeuralSignalTile(ttk.Frame):
                     highlightbackground=self._normal_border,
                     highlightthickness=1,
                 )
-                self.title_lbl.configure(foreground=self._normal_fg)
-                self.value_lbl.configure(foreground=self._normal_fg)
+                # If untrained, keep labels dimmed in normal state too
+                if self._is_untrained:
+                    self.title_lbl.configure(foreground=DARK_MUTED)
+                    self.value_lbl.configure(foreground=DARK_MUTED)
+                else:
+                    self.title_lbl.configure(foreground=self._normal_fg)
+                    self.value_lbl.configure(foreground=self._normal_fg)
         except Exception:
             pass
 
@@ -562,6 +578,14 @@ class NeuralSignalTile(ttk.Frame):
             self.canvas.itemconfigure(seg_ids[i], fill=active_fill)
 
     def set_values(self, long_sig: Any, short_sig: Any, inactive_count: int = 0) -> None:
+        # If untrained, show greyed-out state and skip normal signal display
+        if self._is_untrained:
+            self.value_lbl.config(text="NOT TRAINED")
+            # Grey out all segments
+            for seg_id in self._long_segs + self._short_segs:
+                self.canvas.itemconfigure(seg_id, fill=DARK_MUTED)
+            return
+        
         ls = self._clamp_level(long_sig)
         ss = self._clamp_level(short_sig)
         self._inactive_count = max(0, min(7, int(inactive_count)))  # Clamp 0-7
@@ -570,6 +594,14 @@ class NeuralSignalTile(ttk.Frame):
         self._set_level(self._long_segs, ls, self._long_fill)
         self._set_level(self._short_segs, ss, self._short_fill)
 
+    def set_untrained(self, is_untrained: bool) -> None:
+        """Set whether the coin is untrained (greys out all indicators)."""
+        self._is_untrained = bool(is_untrained)
+        # Refresh visual state (indicators and labels)
+        self._apply_visual_state()  # Update label colors
+        if self._is_untrained:
+            self.set_values(0, 0, 0)  # Trigger untrained display (greys out segments)
+        
     def update_marker_lines(self) -> None:
         """Update marker line positions based on current trading config."""
         trading_cfg = _load_trading_config()
@@ -7806,6 +7838,14 @@ class ApolloHub(tk.Tk):
             if not folder or not os.path.isdir(folder):
                 tile.set_values(0, 0)
                 continue
+
+            # Check if coin is trained - if not, grey out indicators
+            if not self._coin_is_trained(coin):
+                tile.set_untrained(True)
+                continue
+            
+            # Coin is trained - ensure untrained flag is cleared and proceed with normal updates
+            tile.set_untrained(False)
 
             long_sig = 0
             short_sig = 0
